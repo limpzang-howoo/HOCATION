@@ -1,19 +1,35 @@
 "use client";
+
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { Film, Briefcase, Lock, ArrowRight, X } from "lucide-react";
+import { Film, Briefcase, Lock, ArrowRight, X, ChevronRight } from "lucide-react";
 
-// --- 부품: 섹션 카드 (에러 안 나게 여기다 합쳤어!) ---
-function SelectionCard({ title, icon, onClick, delay }: any) {
+// --- 부품 1: 하이엔드 섹션 카드 ---
+function SelectionCard({ title, icon, description, onClick, delay }: any) {
   return (
     <motion.button
-      initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6, delay }} onClick={onClick}
-      className="group relative flex flex-1 flex-col items-center justify-center gap-6 rounded-3xl border border-white/5 bg-white/[0.02] p-10 backdrop-blur-sm transition-all hover:border-white/20 hover:bg-white/[0.04]"
+      initial={{ opacity: 0, y: 30 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.8, delay, ease: [0.16, 1, 0.3, 1] }}
+      onClick={onClick}
+      className="group relative flex flex-1 flex-col items-start justify-end gap-4 overflow-hidden rounded-[2rem] border border-white/5 bg-[#0A0A0A] p-10 transition-all hover:border-white/20"
     >
-      <div className="text-white/60 group-hover:text-white/90">{icon}</div>
-      <span className="text-lg font-light text-white/70 group-hover:text-white">{title}</span>
+      {/* 호버 시 은은한 불빛 효과 */}
+      <div className="absolute inset-0 -z-10 bg-gradient-to-br from-zinc-800/20 via-transparent to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+      
+      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-white/5 text-white/40 transition-all duration-500 group-hover:bg-white/10 group-hover:text-white">
+        {icon}
+      </div>
+      
+      <div className="text-left">
+        <h3 className="text-2xl font-light tracking-tight text-white/90">{title}</h3>
+        <p className="mt-2 text-sm font-light text-white/30">{description}</p>
+      </div>
+
+      <div className="mt-6 flex items-center gap-2 text-xs font-light tracking-[0.2em] text-white/20 transition-all group-hover:text-white/60">
+        ENTER ARCHIVE <ChevronRight size={14} />
+      </div>
     </motion.button>
   );
 }
@@ -25,32 +41,90 @@ export default function Home() {
   const [password, setPassword] = useState("");
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center px-4">
-      <div className="mb-16 text-center">
-        <h1 className="text-5xl font-light tracking-[0.2em]">LOOKA</h1>
-        <p className="mt-4 text-sm tracking-widest text-white/40">PREMIUM LOCATION ARCHIVE</p>
+    <div className="relative flex min-h-screen flex-col items-center justify-center bg-black px-6 selection:bg-white/30">
+      {/* 배경 빛 번짐 효과 (Vision OS 스타일) */}
+      <div className="fixed left-1/2 top-0 -translate-x-1/2 w-[1000px] h-[600px] bg-zinc-900/30 blur-[120px] rounded-full pointer-events-none" />
+
+      {/* 로고 영역 */}
+      <motion.div 
+        initial={{ opacity: 0, y: -20 }} 
+        animate={{ opacity: 1, y: 0 }} 
+        transition={{ duration: 1 }}
+        className="z-10 mb-20 text-center"
+      >
+        <h1 className="text-6xl font-extralight tracking-[0.3em] text-white/90 sm:text-7xl">
+          LOOKA
+        </h1>
+        <div className="mt-6 flex items-center justify-center gap-4">
+          <div className="h-[1px] w-8 bg-white/20" />
+          <p className="text-[10px] font-light tracking-[0.5em] text-white/30 uppercase">Professional Scouting</p>
+          <div className="h-[1px] w-8 bg-white/20" />
+        </div>
+      </motion.div>
+
+      {/* 카드 섹션 */}
+      <div className="z-10 flex w-full max-w-4xl flex-col gap-6 sm:flex-row">
+        <SelectionCard 
+          title="Production" 
+          description="영화, 광고 제작사를 위한 로케이션 아카이브"
+          icon={<Film size={28} strokeWidth={1} />} 
+          onClick={() => setSelectedSection("Production")} 
+          delay={0.2} 
+        />
+        <SelectionCard 
+          title="Agency" 
+          description="기획사 및 대행사 전용 데이터베이스"
+          icon={<Briefcase size={28} strokeWidth={1} />} 
+          onClick={() => setSelectedSection("Agency")} 
+          delay={0.3} 
+        />
       </div>
 
-      <div className="flex w-full max-w-2xl flex-col gap-6 sm:flex-row">
-        <SelectionCard title="Production" icon={<Film />} onClick={() => setSelectedSection("Production")} delay={0.1} />
-        <SelectionCard title="Agency" icon={<Briefcase />} onClick={() => setSelectedSection("Agency")} delay={0.2} />
-      </div>
-
+      {/* 비밀번호 모달 */}
       <AnimatePresence>
         {selectedSection && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/60 backdrop-blur-md" onClick={() => setSelectedSection(null)} />
-            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-sm rounded-3xl border border-white/10 bg-white/5 p-8 backdrop-blur-2xl">
-              <button onClick={() => setSelectedSection(null)} className="absolute right-6 top-6 text-white/40 hover:text-white"><X /></button>
-              <h2 className="mb-6 text-center text-xl font-medium">{selectedSection} Access</h2>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-2xl bg-black/40 py-4 text-center text-2xl outline-none" placeholder="••••" maxLength={4} autoFocus />
-              <button onClick={() => password === "1234" ? router.push("/projects") : alert("Wrong Password")} className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-white/10 py-4 hover:bg-white/20">
-                Enter Archive <ArrowRight size={18} />
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} 
+              className="absolute inset-0 bg-black/80 backdrop-blur-xl" 
+              onClick={() => setSelectedSection(null)} 
+            />
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 20 }} 
+              animate={{ scale: 1, opacity: 1, y: 0 }} 
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="relative w-full max-w-md rounded-[2.5rem] border border-white/10 bg-white/[0.03] p-12 shadow-2xl backdrop-blur-3xl"
+            >
+              <button onClick={() => setSelectedSection(null)} className="absolute right-8 top-8 text-white/20 hover:text-white transition-colors"><X size={20} /></button>
+              
+              <div className="mb-10 text-center">
+                <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-white/5">
+                  <Lock size={24} className="text-white/60" />
+                </div>
+                <h2 className="text-2xl font-light text-white">{selectedSection} Access</h2>
+                <p className="mt-3 text-sm text-white/30 font-light">보안 코드를 입력하여 데이터에 접속하세요</p>
+              </div>
+
+              <input 
+                type="password" value={password} onChange={(e) => setPassword(e.target.value)} 
+                className="w-full rounded-2xl border border-white/5 bg-white/5 py-5 text-center text-3xl tracking-[0.6em] text-white outline-none focus:border-white/20 focus:bg-white/10 transition-all" 
+                placeholder="••••" maxLength={4} autoFocus 
+              />
+              
+              <button 
+                onClick={() => password === "1234" ? router.push("/projects") : alert("Access Denied")} 
+                className="mt-8 flex w-full items-center justify-center gap-3 rounded-[1.2rem] bg-white text-black py-5 text-sm font-medium transition-transform active:scale-[0.98] hover:bg-zinc-200"
+              >
+                Access Archive <ArrowRight size={18} />
               </button>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+      
+      <footer className="fixed bottom-8 text-[10px] tracking-widest text-white/10">
+        © 2026 LOOKA SYSTEM. ALL RIGHTS RESERVED.
+      </footer>
     </div>
   );
 }
