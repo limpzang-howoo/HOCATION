@@ -2,5 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { --foreground-rgb: 255, 255, 255; --background-start-rgb: 0, 0, 0; --background-end-rgb: 0, 0, 0; }
-body { color: rgb(var(--foreground-rgb)); background: black; }
+:root {
+  --background: 0 0% 0%;
+  --foreground: 0 0% 100%;
+}
+
+body {
+  background: black;
+  color: white;
+  overflow-x: hidden;
+}
+
+/* 스크롤바도 세련되게 */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
