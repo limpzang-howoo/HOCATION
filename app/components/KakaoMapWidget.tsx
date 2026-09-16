@@ -250,11 +250,11 @@ export default function KakaoMapWidget() {
             {status === "error" ? "지도를 불러올 수 없습니다" : "KAKAO MAP LOADING..."}
           </div>
         )}
-        <div className="pointer-events-none absolute left-3 top-3 rounded-md bg-black/60 px-2 py-1 text-[9px] tracking-widest text-[#deff9a]/80 backdrop-blur">
+        <div className="pointer-events-none absolute left-3 top-3 z-20 rounded-md bg-black/60 px-2 py-1 text-[9px] tracking-widest text-[#deff9a]/80 backdrop-blur">
           LOCATION SCOUTER
         </div>
         {status === "ready" && (
-          <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
+          <div className="absolute right-3 top-3 z-20 flex flex-col items-end gap-1.5">
             <CategoryToggleLegend active={active} onToggle={toggleCategory} />
             <button
               onClick={() => setExpanded(true)}
@@ -276,12 +276,12 @@ export default function KakaoMapWidget() {
             onClick={(e) => e.stopPropagation()}
           >
             <div ref={modalMapRef} className="h-full w-full" />
-            <div className="absolute left-4 top-4">
+            <div className="absolute left-4 top-4 z-20">
               <CategoryToggleLegend active={active} onToggle={toggleCategory} showLabel />
             </div>
             <button
               onClick={() => setExpanded(false)}
-              className="absolute right-4 top-4 flex items-center justify-center rounded-md border border-white/20 bg-black/80 p-2 text-white/80 backdrop-blur transition-colors hover:border-[#deff9a]/50 hover:text-[#deff9a]"
+              className="absolute right-4 top-4 z-20 flex items-center justify-center rounded-md border border-white/20 bg-black/80 p-2 text-white/80 backdrop-blur transition-colors hover:border-[#deff9a]/50 hover:text-[#deff9a]"
               aria-label="닫기"
             >
               <X size={16} />
