@@ -1,10 +1,29 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Home, Coffee, Trees } from "lucide-react";
 import PasswordGate from "../../components/PasswordGate";
+
+const KakaoMapWidget = dynamic(() => import("../../components/KakaoMapWidget"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-56 items-center justify-center rounded-2xl border border-white/10 bg-[#0A0A0A] text-xs tracking-widest text-white/20">
+      KAKAO MAP LOADING...
+    </div>
+  ),
+});
+
+const WeatherWidget = dynamic(() => import("../../components/WeatherWidget"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-56 items-center justify-center rounded-2xl border border-white/10 bg-[#0A0A0A] text-xs tracking-widest text-white/20">
+      WEATHER LOADING...
+    </div>
+  ),
+});
 
 const CATEGORIES = [
   { slug: "home", name: "집 공간", icon: Home },
@@ -79,14 +98,10 @@ function ProductionContent({ id }: { id: string }) {
         })}
       </div>
 
-      {/* 하단 HUD: 지도 / 날씨 (좌우 대칭) — 실제 연동은 다음 단계 */}
+      {/* 하단 HUD: 지도 / 날씨 (좌우 대칭) */}
       <div className="relative z-10 mx-auto mt-12 grid max-w-3xl grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="flex h-56 items-center justify-center rounded-2xl border border-white/10 bg-[#0A0A0A] text-xs tracking-widest text-white/20">
-          NAVER MAP SCOUTER (연동 예정)
-        </div>
-        <div className="flex h-56 items-center justify-center rounded-2xl border border-white/10 bg-[#0A0A0A] text-xs tracking-widest text-white/20">
-          ACCUWEATHER SCOUTER (연동 예정)
-        </div>
+        <KakaoMapWidget />
+        <WeatherWidget />
       </div>
     </div>
   );
