@@ -53,7 +53,15 @@ type LocationEntry = {
   label: string; // 폴더명에서 따온 라벨 (예: "1차물색") — 화면에 그대로 표시
   dateLabel: string; // "09/18"
   isLatest: boolean; // 같은 카테고리 안에서 가장 최근 폴더인지
+  photos: string[]; // 폴더 맨 위 사진 1~2장 (지금은 샘플 이미지, 나중에 실제 업로드 사진으로 교체)
 };
+
+// TODO: 실제로는 각 폴더에 업로드된 사진 중 맨 위 1~2장의 실제 URL로 교체.
+// 지금은 구조/디자인 단계라 장소명을 시드로 한 고정 샘플 이미지를 사용.
+function samplePhotos(seed: string): string[] {
+  const key = encodeURIComponent(seed);
+  return [`https://picsum.photos/seed/${key}-1/400/300`, `https://picsum.photos/seed/${key}-2/400/300`];
+}
 
 function parseFolderName(folderName: string): { mmdd: string; label: string } | null {
   const m = folderName.match(/^(\d{4})_(.+)$/); // MMDD_라벨
@@ -86,6 +94,7 @@ function buildLocations(raw: RawLocation[]): LocationEntry[] {
         label: parsed?.label ?? r.folderName,
         dateLabel,
         isLatest: mmdd === latestMmdd,
+        photos: samplePhotos(r.name),
       });
     });
   });
@@ -142,13 +151,20 @@ function tooltipHtml(loc: LocationEntry) {
   return `<div style="transform:translateY(-6px);padding:4px 9px;border-radius:8px;background:rgba(0,0,0,0.85);color:#deff9a;font-size:11px;white-space:nowrap;font-family:inherit;border:1px solid rgba(222,255,154,0.3);">${loc.name} · ${loc.label} (${loc.dateLabel})</div>`;
 }
 
-function renderMarkers(map: any, onDone?: (entries: MarkerEntry[]) => void) {
+function renderMarkers(
+  map: any,
+  onDone?: (entries: MarkerEntry[]) => void,
+  onSelect?: (loc: LocationEntry | null) => void
+) {
   const { kakao } = window;
   const geocoder = new kakao.maps.services.Geocoder();
   const bounds = new kakao.maps.LatLngBounds();
   let done = 0;
   let found = 0;
   const entries: MarkerEntry[] = [];
+
+  // 빈 지도 영역을 클릭하면 선택 해제 (사진 패널 닫기)
+  if (onSelect) kakao.maps.event.addListener(map, "click", () => onSelect(null));
 
   SAMPLE_LOCATIONS.forEach((loc) => {
     geocoder.addressSearch(loc.address, (result: any[], resultStatus: string) => {
@@ -173,6 +189,8 @@ function renderMarkers(map: any, onDone?: (entries: MarkerEntry[]) => void) {
         });
         kakao.maps.event.addListener(marker, "mouseover", () => overlay.setMap(map));
         kakao.maps.event.addListener(marker, "mouseout", () => overlay.setMap(null));
+        // 클릭 시 해당 폴더의 사진 미리보기 패널 표시
+        if (onSelect) kakao.maps.event.addListener(marker, "click", () => onSelect(loc));
 
         entries.push({ marker, overlay, category: loc.category, map });
         bounds.extend(coords);
@@ -220,6 +238,52 @@ function CategoryToggleLegend({
   );
 }
 
+// 핀 클릭 시 뜨는 사진 미리보기 패널 — 폴더 맨 위 1~2장 + 장소명/라벨
+function PhotoPreviewPanel({
+  loc,
+  onClose,
+  compact = false,
+}: {
+  loc: LocationEntry;
+  onClose: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={`absolute z-30 rounded-xl border border-white/10 bg-black/85 shadow-2xl shadow-black/60 backdrop-blur-md ${
+        compact ? "inset-x-2 bottom-2 p-2.5" : "bottom-4 right-4 w-64 p-3"
+      }`}
+    >
+      <div className="mb-1.5 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-[11px] font-medium text-white">{loc.name}</p>
+          <p className="truncate text-[9px] tracking-wide text-[#deff9a]/70">
+            {loc.label} · {loc.dateLabel}
+          </p>
+        </div>
+        <button
+          onClick={onClose}
+          className="shrink-0 rounded p-0.5 text-white/40 transition-colors hover:text-[#deff9a]"
+          aria-label="닫기"
+        >
+          <X size={12} />
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-1.5">
+        {loc.photos.map((src, i) => (
+          <img
+            key={i}
+            src={src}
+            alt={`${loc.name} 사진 ${i + 1}`}
+            loading="lazy"
+            className={`w-full rounded-lg object-cover ${compact ? "h-14" : "h-24"}`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function KakaoMapWidget() {
   const mapRef = useRef<HTMLDivElement>(null);
   const modalMapRef = useRef<HTMLDivElement>(null);
@@ -228,6 +292,12 @@ export default function KakaoMapWidget() {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [expanded, setExpanded] = useState(false);
   const [active, setActive] = useState<Set<LocationCategory>>(new Set(ALL_CATEGORIES));
+  const [selected, setSelected] = useState<LocationEntry | null>(null);
+
+  function openExpanded(open: boolean) {
+    setSelected(null);
+    setExpanded(open);
+  }
 
   function toggleCategory(cat: LocationCategory) {
     setActive((prev) => {
@@ -258,11 +328,15 @@ export default function KakaoMapWidget() {
           center: new kakao.maps.LatLng(37.5665, 126.978),
           level: 8,
         });
-        renderMarkers(map, (entries) => {
-          if (cancelled) return;
-          compactEntriesRef.current = entries;
-          setStatus("ready");
-        });
+        renderMarkers(
+          map,
+          (entries) => {
+            if (cancelled) return;
+            compactEntriesRef.current = entries;
+            setStatus("ready");
+          },
+          (loc) => setSelected(loc)
+        );
       })
       .catch(() => !cancelled && setStatus("error"));
     return () => {
@@ -281,14 +355,18 @@ export default function KakaoMapWidget() {
         center: new kakao.maps.LatLng(37.5665, 126.978),
         level: 8,
       });
-      renderMarkers(map, (entries) => {
-        if (cancelled) return;
-        modalEntriesRef.current = entries;
-        // 이미 꺼둔 카테고리는 모달에도 그대로 반영
-        entries.forEach((entry) => {
-          if (!active.has(entry.category)) entry.marker.setMap(null);
-        });
-      });
+      renderMarkers(
+        map,
+        (entries) => {
+          if (cancelled) return;
+          modalEntriesRef.current = entries;
+          // 이미 꺼둔 카테고리는 모달에도 그대로 반영
+          entries.forEach((entry) => {
+            if (!active.has(entry.category)) entry.marker.setMap(null);
+          });
+        },
+        (loc) => setSelected(loc)
+      );
       setTimeout(() => map.relayout(), 60);
     });
     return () => {
@@ -324,19 +402,22 @@ export default function KakaoMapWidget() {
           <div className="absolute right-3 top-3 z-20 flex flex-col items-end gap-1.5">
             <CategoryToggleLegend active={active} onToggle={toggleCategory} />
             <button
-              onClick={() => setExpanded(true)}
+              onClick={() => openExpanded(true)}
               className="flex items-center gap-1 rounded-md bg-[#deff9a] px-2.5 py-1.5 text-[10px] font-medium tracking-widest text-black shadow-lg shadow-black/40 transition-transform active:scale-95 hover:bg-[#deff9a]/90"
             >
               <Maximize2 size={12} /> 확대
             </button>
           </div>
         )}
+        {selected && !expanded && (
+          <PhotoPreviewPanel loc={selected} onClose={() => setSelected(null)} compact />
+        )}
       </div>
 
       {expanded && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm"
-          onClick={() => setExpanded(false)}
+          onClick={() => openExpanded(false)}
         >
           <div
             className="relative h-[90vh] w-[95vw] max-w-7xl overflow-hidden rounded-2xl border border-white/10 bg-[#0A0A0A]"
@@ -347,10 +428,11 @@ export default function KakaoMapWidget() {
               <CategoryToggleLegend active={active} onToggle={toggleCategory} showLabel />
             </div>
             <div className="pointer-events-none absolute bottom-4 left-4 z-20 rounded-md bg-black/70 px-3 py-1.5 text-[9px] tracking-widest text-white/50 backdrop-blur">
-              핀에 마우스를 올리면 폴더 라벨이 보여요 · 크고 밝은 핀 = 해당 공간의 가장 최근 폴더
+              핀을 클릭하면 사진이 보여요 · 마우스오버는 폴더 라벨 · 크고 밝은 핀 = 가장 최근 폴더
             </div>
+            {selected && <PhotoPreviewPanel loc={selected} onClose={() => setSelected(null)} />}
             <button
-              onClick={() => setExpanded(false)}
+              onClick={() => openExpanded(false)}
               className="absolute right-4 top-4 z-20 flex items-center justify-center rounded-md border border-white/20 bg-black/80 p-2 text-white/80 backdrop-blur transition-colors hover:border-[#deff9a]/50 hover:text-[#deff9a]"
               aria-label="닫기"
             >
