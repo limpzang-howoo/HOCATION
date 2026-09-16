@@ -54,12 +54,12 @@ export default function WeatherWidget() {
   return (
     <div className="relative flex h-56 w-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0A0A0A] p-4">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-[9px] tracking-widest text-[#deff9a]/80">서울・경기 WEATHER</span>
+        <span className="text-[9px] tracking-widest text-[#deff9a]/80">서울・인천・경기 WEATHER</span>
         <a
           href="https://www.weather.go.kr/w/weather/forecast/mid-term.do?stnId1=109"
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[9px] tracking-widest text-white/20 underline decoration-dotted underline-offset-2 transition-colors hover:text-[#deff9a]/70"
+          className="text-[9px] tracking-widest text-[#deff9a]/60 underline underline-offset-2 transition-colors hover:text-[#deff9a]"
         >
           기상청 공식 데이터 ↗{days && days.length > 3 ? ` · ${days.length}일` : ""}
         </a>
