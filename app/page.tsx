@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import Link from "next/link";
+import PasswordGate from "./components/PasswordGate";
 
 // TODO: 실제 클라이언트/프로덕션 로고 데이터로 교체 예정 (지금은 100개 플레이스홀더)
 const BRANDS = Array.from({ length: 100 }, (_, i) => ({
@@ -10,6 +11,19 @@ const BRANDS = Array.from({ length: 100 }, (_, i) => ({
 }));
 
 export default function Home() {
+  return (
+    <PasswordGate
+      storageKey="looka_master_auth"
+      correctPassword="1234"
+      title="LOCATION ARCHIVE"
+      subtitle="MASTER ACCESS"
+    >
+      <HomeGrid />
+    </PasswordGate>
+  );
+}
+
+function HomeGrid() {
   return (
     <div className="relative min-h-screen bg-black px-4 py-10 sm:px-8 sm:py-16">
       {/* 배경 은은한 네온 글로우 */}
