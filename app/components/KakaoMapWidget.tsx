@@ -254,17 +254,15 @@ export default function KakaoMapWidget() {
           LOCATION SCOUTER
         </div>
         {status === "ready" && (
-          <div className="absolute right-3 top-3">
+          <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
             <CategoryToggleLegend active={active} onToggle={toggleCategory} />
+            <button
+              onClick={() => setExpanded(true)}
+              className="flex items-center gap-1 rounded-md bg-[#deff9a] px-2.5 py-1.5 text-[10px] font-medium tracking-widest text-black shadow-lg shadow-black/40 transition-transform active:scale-95 hover:bg-[#deff9a]/90"
+            >
+              <Maximize2 size={12} /> 확대
+            </button>
           </div>
-        )}
-        {status === "ready" && (
-          <button
-            onClick={() => setExpanded(true)}
-            className="absolute bottom-3 right-3 flex items-center gap-1.5 rounded-md border border-white/20 bg-black/80 px-2.5 py-1.5 text-[10px] tracking-widest text-white/80 backdrop-blur transition-colors hover:border-[#deff9a]/50 hover:text-[#deff9a]"
-          >
-            <Maximize2 size={13} /> 확대
-          </button>
         )}
       </div>
 
