@@ -23,13 +23,78 @@ const CATEGORY_COLORS: Record<LocationCategory, string> = {
 
 const ALL_CATEGORIES: LocationCategory[] = ["home", "cafe", "playground"];
 
-// TODO: 실제 업로드된 로케이션 주소로 교체 예정. 지금은 구조/디자인 단계라 샘플 주소로 지도-연동 자체만 검증
-const SAMPLE_LOCATIONS: { name: string; address: string; category: LocationCategory }[] = [
-  { name: "집 공간 01", address: "서울 강남구 테헤란로 152", category: "home" },
-  { name: "카페 공간 01", address: "서울 마포구 양화로 133", category: "cafe" },
-  { name: "운동장 공간 01", address: "서울 송파구 올림픽로 25", category: "playground" },
-  { name: "집 공간 02", address: "서울 성동구 왕십리로 115", category: "home" },
+// ── 폴더명으로 회차(1차/2차/3차...) 자동 인식 ──
+// 업로드 규칙: "MMDD_라벨" (예: 0918_집자료, 0925_집자료). 같은 카테고리 안에서
+// 날짜가 빠른 폴더부터 1차, 2차... 로 자동 배정됨. 회차 수는 폴더가 늘어나는 만큼 자동으로 늘어남.
+type RawLocation = {
+  category: LocationCategory;
+  folderName: string; // 예: "0918_집자료"
+  name: string;
+  address: string;
+};
+
+// TODO: 실제로는 Supabase에 업로드된 폴더 목록을 그대로 이 형태로 넣으면 됨.
+// 지금은 구조/디자인 단계라 사용자가 말한 "0918_집자료 / 0925_집자료" 규칙을 그대로 샘플로 재현.
+const RAW_LOCATIONS: RawLocation[] = [
+  { category: "home", folderName: "0918_집자료", name: "테헤란로 사옥", address: "서울 강남구 테헤란로 152" },
+  { category: "home", folderName: "0918_집자료", name: "왕십리 주택", address: "서울 성동구 왕십리로 115" },
+  { category: "home", folderName: "0925_집자료", name: "연남동 단독주택", address: "서울 마포구 성미산로 100" },
+  { category: "cafe", folderName: "0918_카페자료", name: "합정 카페", address: "서울 마포구 양화로 133" },
+  { category: "playground", folderName: "0918_운동장자료", name: "잠실 운동장", address: "서울 송파구 올림픽로 25" },
+  { category: "playground", folderName: "0925_운동장자료", name: "고척 운동장", address: "서울 구로구 경인로 430" },
+  { category: "playground", folderName: "1002_운동장자료", name: "목동 운동장", address: "서울 양천구 안양천로 939" },
 ];
+
+type LocationEntry = {
+  name: string;
+  address: string;
+  category: LocationCategory;
+  round: number;
+  roundLabel: string; // "09/18"
+  isLatestRound: boolean;
+};
+
+function parseFolderDate(folderName: string): { mmdd: string; label: string } | null {
+  const m = folderName.match(/^(\d{4})_(.+)$/); // MMDD_라벨
+  if (!m) return null;
+  return { mmdd: m[1], label: m[2] };
+}
+
+// 폴더명 규칙(MMDD_라벨)에서 카테고리별로 날짜순 정렬 → 회차 자동 부여
+function buildLocationsWithRounds(raw: RawLocation[]): LocationEntry[] {
+  const byCategory: Record<LocationCategory, RawLocation[]> = { home: [], cafe: [], playground: [] };
+  raw.forEach((r) => byCategory[r.category].push(r));
+
+  const result: LocationEntry[] = [];
+
+  (Object.keys(byCategory) as LocationCategory[]).forEach((cat) => {
+    const items = byCategory[cat];
+    // 이 카테고리 안에 있는 회차 폴더(날짜)들을 오름차순 정렬
+    const uniqueDates = Array.from(
+      new Set(items.map((r) => parseFolderDate(r.folderName)?.mmdd ?? "9999"))
+    ).sort();
+    const maxRound = uniqueDates.length;
+
+    items.forEach((r) => {
+      const parsed = parseFolderDate(r.folderName);
+      const mmdd = parsed?.mmdd ?? "9999";
+      const round = uniqueDates.indexOf(mmdd) + 1;
+      const roundLabel = mmdd.length === 4 ? `${mmdd.slice(0, 2)}/${mmdd.slice(2, 4)}` : mmdd;
+      result.push({
+        name: r.name,
+        address: r.address,
+        category: r.category,
+        round,
+        roundLabel,
+        isLatestRound: round === maxRound,
+      });
+    });
+  });
+
+  return result;
+}
+
+const SAMPLE_LOCATIONS: LocationEntry[] = buildLocationsWithRounds(RAW_LOCATIONS);
 
 declare global {
   interface Window {
@@ -66,15 +131,19 @@ function loadKakaoSdk(): Promise<void> {
   });
 }
 
-// 카테고리 색상의 심플한 핀 모양 SVG를 마커 이미지로 사용
-function pinImageSrc(color: string) {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="38" viewBox="0 0 28 38"><path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 24 14 24s14-13.5 14-24C28 6.3 21.7 0 14 0z" fill="${color}"/><circle cx="14" cy="14" r="5.5" fill="white"/></svg>`;
+// 카테고리 색상 핀 + 회차 번호 배지. 최신 회차는 조금 더 크고 은은한 글로우를 둘러 강조.
+function pinImageSrc(color: string, round: number, isLatest: boolean) {
+  const label = round <= 9 ? String(round) : "9+";
+  const glow = isLatest
+    ? `<circle cx="14" cy="14" r="13" fill="${color}" opacity="0.22"/>`
+    : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 38">${glow}<path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 24 14 24s14-13.5 14-24C28 6.3 21.7 0 14 0z" fill="${color}"/><circle cx="14" cy="14" r="6.2" fill="white"/><text x="14" y="17" font-size="8" text-anchor="middle" font-family="ui-monospace, monospace" font-weight="700" fill="${color}">${label}</text></svg>`;
   return `data:image/svg+xml;base64,${btoa(svg)}`;
 }
 
-// 마우스오버 시 뜨는 장소명 말풍선 HTML
-function tooltipHtml(name: string) {
-  return `<div style="transform:translateY(-6px);padding:4px 9px;border-radius:8px;background:rgba(0,0,0,0.85);color:#deff9a;font-size:11px;white-space:nowrap;font-family:inherit;border:1px solid rgba(222,255,154,0.3);">${name}</div>`;
+// 마우스오버 시 뜨는 장소명 + 회차 말풍선 HTML
+function tooltipHtml(loc: LocationEntry) {
+  return `<div style="transform:translateY(-6px);padding:4px 9px;border-radius:8px;background:rgba(0,0,0,0.85);color:#deff9a;font-size:11px;white-space:nowrap;font-family:inherit;border:1px solid rgba(222,255,154,0.3);">${loc.name} · ${loc.round}차 (${loc.roundLabel})</div>`;
 }
 
 function renderMarkers(map: any, onDone?: (entries: MarkerEntry[]) => void) {
@@ -90,18 +159,20 @@ function renderMarkers(map: any, onDone?: (entries: MarkerEntry[]) => void) {
       done += 1;
       if (resultStatus === kakao.maps.services.Status.OK && result[0]) {
         const coords = new kakao.maps.LatLng(Number(result[0].y), Number(result[0].x));
+        const size = loc.isLatestRound ? 34 : 26;
+        const height = loc.isLatestRound ? 46 : 35;
         const markerImage = new kakao.maps.MarkerImage(
-          pinImageSrc(CATEGORY_COLORS[loc.category]),
-          new kakao.maps.Size(28, 38),
-          { offset: new kakao.maps.Point(14, 38) }
+          pinImageSrc(CATEGORY_COLORS[loc.category], loc.round, loc.isLatestRound),
+          new kakao.maps.Size(size, height),
+          { offset: new kakao.maps.Point(size / 2, height) }
         );
         const marker = new kakao.maps.Marker({ map, position: coords, title: loc.name, image: markerImage });
 
-        // 마우스오버 시 주소/이름 툴팁
+        // 마우스오버 시 이름/회차 툴팁
         const overlay = new kakao.maps.CustomOverlay({
           position: coords,
-          content: tooltipHtml(loc.name),
-          yAnchor: 1.9,
+          content: tooltipHtml(loc),
+          yAnchor: loc.isLatestRound ? 2.3 : 1.9,
           zIndex: 20,
         });
         kakao.maps.event.addListener(marker, "mouseover", () => overlay.setMap(map));
@@ -272,12 +343,15 @@ export default function KakaoMapWidget() {
           onClick={() => setExpanded(false)}
         >
           <div
-            className="relative h-[80vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/10 bg-[#0A0A0A]"
+            className="relative h-[90vh] w-[95vw] max-w-7xl overflow-hidden rounded-2xl border border-white/10 bg-[#0A0A0A]"
             onClick={(e) => e.stopPropagation()}
           >
             <div ref={modalMapRef} className="h-full w-full" />
             <div className="absolute left-4 top-4 z-20">
               <CategoryToggleLegend active={active} onToggle={toggleCategory} showLabel />
+            </div>
+            <div className="pointer-events-none absolute bottom-4 left-4 z-20 rounded-md bg-black/70 px-3 py-1.5 text-[9px] tracking-widest text-white/50 backdrop-blur">
+              핀 안 숫자 = 회차 (1차→2차→3차...) · 크고 밝은 핀 = 해당 공간의 최신 회차
             </div>
             <button
               onClick={() => setExpanded(false)}
