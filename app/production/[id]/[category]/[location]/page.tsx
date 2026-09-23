@@ -1,42 +1,77 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Download, Loader2, Check } from "lucide-react";
-
-// TODO: 실제로는 Supabase에 업로드된 폴더의 실제 사진 목록으로 교체.
-// 지금은 구조/디자인 단계라 장소 slug를 시드로 한 고정 샘플 이미지 6장을 사용.
-function samplePhotoSet(seed: string, count = 6): string[] {
-  const key = encodeURIComponent(seed);
-  return Array.from({ length: count }, (_, i) => `https://picsum.photos/seed/${key}-${i + 1}/600/450`);
-}
+import { Download, Loader2, Check, ImageOff } from "lucide-react";
+import { supabase, locationPhotoUrl } from "../../../../../lib/supabaseClient";
 
 type DownloadState = "idle" | "zipping" | "done" | "error";
+type Photo = { id: string; url: string };
 
-export default function LocationPage() {
+// 라우트 파라미터명은 "location"이지만 실제로는 폴더(folder) id.
+export default function FolderDetailPage() {
   const params = useParams();
   const id = params.id as string;
   const category = params.category as string;
-  const location = params.location as string;
+  const folderId = params.location as string;
 
-  const photos = samplePhotoSet(location);
+  const [folderName, setFolderName] = useState("");
+  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [loading, setLoading] = useState(true);
   const [state, setState] = useState<DownloadState>("idle");
 
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!supabase) {
+        if (!cancelled) setLoading(false);
+        return;
+      }
+      const { data: folder } = await supabase
+        .from("folders")
+        .select("id,folder_name")
+        .eq("id", folderId)
+        .single();
+      if (cancelled) return;
+      if (folder) setFolderName(folder.folder_name);
+
+      const { data: locs } = await supabase.from("locations").select("id").eq("folder_id", folderId);
+      const locIds = (locs ?? []).map((l: any) => l.id);
+      if (locIds.length === 0) {
+        if (!cancelled) setLoading(false);
+        return;
+      }
+
+      const { data: photoRows } = await supabase
+        .from("photos")
+        .select("id,storage_path,sort_order")
+        .in("location_id", locIds)
+        .order("sort_order", { ascending: true });
+      if (cancelled) return;
+      setPhotos((photoRows ?? []).map((p: any) => ({ id: p.id, url: locationPhotoUrl(p.storage_path) })));
+      setLoading(false);
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [folderId]);
+
   async function handleDownloadAll() {
-    if (state === "zipping") return;
+    if (state === "zipping" || photos.length === 0) return;
     setState("zipping");
     try {
       const JSZip = (await import("jszip")).default;
       const zip = new JSZip();
 
       const results = await Promise.all(
-        photos.map(async (url, i) => {
-          const res = await fetch(url);
+        photos.map(async (p, i) => {
+          const res = await fetch(p.url);
           if (!res.ok) throw new Error("사진을 불러오지 못했습니다");
           const blob = await res.blob();
-          return { name: `${location}_${String(i + 1).padStart(2, "0")}.jpg`, blob };
+          return { name: `${folderName || folderId}_${String(i + 1).padStart(2, "0")}.jpg`, blob };
         })
       );
       results.forEach(({ name, blob }) => zip.file(name, blob));
@@ -45,7 +80,7 @@ export default function LocationPage() {
       const url = URL.createObjectURL(zipBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${location}.zip`;
+      a.download = `${folderName || folderId}.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -63,11 +98,7 @@ export default function LocationPage() {
     <div className="relative min-h-screen bg-black px-4 py-10 sm:px-8 sm:py-16">
       <div className="pointer-events-none fixed left-1/2 top-0 h-[500px] w-[900px] -translate-x-1/2 rounded-full bg-[#deff9a]/[0.04] blur-[140px]" />
 
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="relative z-10 mx-auto max-w-5xl"
-      >
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="relative z-10 mx-auto max-w-5xl">
         <p className="mb-3 font-mono text-xs tracking-widest text-white/30">
           <Link href={`/production/${id}/${category}`} className="hover:text-[#deff9a] transition-colors">
             ← BACK
@@ -75,11 +106,13 @@ export default function LocationPage() {
         </p>
 
         <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
-          <h1 className="text-xl font-light tracking-widest text-white">{location.toUpperCase()}</h1>
+          <h1 className="text-xl font-light tracking-widest text-white">
+            {(folderName || "LOADING").toUpperCase()}
+          </h1>
 
           <button
             onClick={handleDownloadAll}
-            disabled={state === "zipping"}
+            disabled={state === "zipping" || photos.length === 0}
             className="flex items-center gap-2 rounded-md bg-[#deff9a] px-4 py-2 text-xs font-medium tracking-widest text-black shadow-lg shadow-black/40 transition-all hover:bg-[#deff9a]/90 disabled:cursor-not-allowed disabled:opacity-70"
           >
             {state === "zipping" && <Loader2 size={14} className="animate-spin" />}
@@ -92,24 +125,31 @@ export default function LocationPage() {
           </button>
         </div>
 
-        {/* 사진 그리드 — 지금은 샘플 이미지, 실제 업로드 사진으로 추후 교체 */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {photos.map((src, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, delay: i * 0.05 }}
-              className="aspect-[4/3] overflow-hidden rounded-xl border border-white/10 bg-[#0A0A0A]"
-            >
-              <img src={src} alt={`${location} 사진 ${i + 1}`} loading="lazy" className="h-full w-full object-cover" />
-            </motion.div>
-          ))}
-        </div>
-
-        <p className="mt-8 max-w-md text-sm font-light text-white/30">
-          VR 파노라마 뷰어와 스파이셜 라이트박스는 다음 단계에서 여기 들어갈 예정입니다.
-        </p>
+        {loading ? (
+          <div className="flex justify-center py-16 text-white/20">
+            <Loader2 size={20} className="animate-spin" />
+          </div>
+        ) : photos.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-16 text-white/20">
+            <ImageOff size={22} strokeWidth={1} />
+            <p className="text-xs tracking-widest">아직 업로드된 사진이 없습니다</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {photos.map((p, i) => (
+              <motion.div
+                key={p.id}
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4, delay: i * 0.05 }}
+                className="aspect-[4/3] overflow-hidden rounded-xl border border-white/10 bg-[#0A0A0A]"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={p.url} alt={`${folderName} 사진 ${i + 1}`} loading="lazy" className="h-full w-full object-cover" />
+              </motion.div>
+            ))}
+          </div>
+        )}
       </motion.div>
     </div>
   );

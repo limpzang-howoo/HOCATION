@@ -4,8 +4,10 @@ import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Home, Coffee, Trees } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Home, Coffee, Trees, Folder } from "lucide-react";
 import PasswordGate from "../../components/PasswordGate";
+import { supabase } from "../../../lib/supabaseClient";
 
 const KakaoMapWidget = dynamic(() => import("../../components/KakaoMapWidget"), {
   ssr: false,
@@ -25,20 +27,40 @@ const WeatherWidget = dynamic(() => import("../../components/WeatherWidget"), {
   ),
 });
 
-const CATEGORIES = [
-  { slug: "home", name: "집 공간", icon: Home },
-  { slug: "cafe", name: "카페 공간", icon: Coffee },
-  { slug: "playground", name: "운동장 공간", icon: Trees },
-];
+// 관리자 페이지에서 만든 카테고리는 자유 이름이라, 알려진 slug만 전용 아이콘을 쓰고 나머진 기본 폴더 아이콘
+const ICONS: Record<string, typeof Home> = { home: Home, cafe: Coffee, playground: Trees };
+
+type CategoryRow = { slug: string; name: string };
 
 export default function ProductionPage() {
   const params = useParams();
   const id = params.id as string;
+  const [accessCode, setAccessCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!supabase) {
+        if (!cancelled) setAccessCode("1234");
+        return;
+      }
+      const { data } = await supabase.from("brands").select("access_code").eq("id", Number(id)).single();
+      if (!cancelled) setAccessCode(data?.access_code || "1234");
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (accessCode === null) {
+    return <div className="min-h-screen bg-black" />;
+  }
 
   return (
     <PasswordGate
       storageKey={`looka_prod_auth_${id}`}
-      correctPassword="1234"
+      correctPassword={accessCode}
       title={`PRODUCTION ${String(id).padStart(2, "0")}`}
       subtitle="ENTER ACCESS CODE"
     >
@@ -48,6 +70,25 @@ export default function ProductionPage() {
 }
 
 function ProductionContent({ id }: { id: string }) {
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!supabase) return;
+      const { data } = await supabase
+        .from("categories")
+        .select("slug,name")
+        .eq("brand_id", Number(id))
+        .order("sort_order", { ascending: true });
+      if (!cancelled) setCategories(data ?? []);
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   return (
     <div className="relative min-h-screen bg-black px-4 py-10 sm:px-8 sm:py-16">
       <div className="pointer-events-none fixed left-1/2 top-0 h-[500px] w-[900px] -translate-x-1/2 rounded-full bg-[#deff9a]/[0.04] blur-[140px]" />
@@ -73,10 +114,10 @@ function ProductionContent({ id }: { id: string }) {
         BRAND <span className="text-[#deff9a]">{String(id).padStart(2, "0")}</span>
       </motion.h1>
 
-      {/* Mac Finder 스타일 3대 공간 폴더 */}
+      {/* Mac Finder 스타일 공간 폴더 — 관리자 페이지에서 만든 카테고리 */}
       <div className="relative z-10 mx-auto grid max-w-3xl grid-cols-1 gap-6 sm:grid-cols-3">
-        {CATEGORIES.map((cat, idx) => {
-          const Icon = cat.icon;
+        {categories.map((cat, idx) => {
+          const Icon = ICONS[cat.slug] ?? Folder;
           return (
             <motion.div
               key={cat.slug}

@@ -5,13 +5,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
-  Home,
-  Coffee,
-  Trees,
   Folder,
   Plus,
   Trash2,
+  Pencil,
   X,
+  Check,
   Upload,
   Loader2,
   ImageOff,
@@ -20,16 +19,8 @@ import PasswordGate from "../../components/PasswordGate";
 import { supabase, locationPhotoUrl } from "../../../lib/supabaseClient";
 import { ADMIN_TOKEN } from "../../../lib/adminToken";
 
-type Category = "home" | "cafe" | "playground";
-
-const CATEGORIES: { slug: Category; name: string; icon: typeof Home }[] = [
-  { slug: "home", name: "집 공간", icon: Home },
-  { slug: "cafe", name: "카페 공간", icon: Coffee },
-  { slug: "playground", name: "운동장 공간", icon: Trees },
-];
-
-type FolderRow = { id: string; category: Category; folder_name: string; mmdd: string; label: string };
-type LocationRow = { id: string; folder_id: string; name: string; address: string; sort_order: number };
+type CategoryRow = { id: string; slug: string; name: string; sort_order: number };
+type FolderRow = { id: string; category: string; folder_name: string; mmdd: string; label: string };
 type PhotoRow = { id: string; storage_path: string; sort_order: number };
 
 async function adminFetch(url: string, init?: RequestInit) {
@@ -47,89 +38,175 @@ export default function AdminPage() {
   const id = params.id as string;
 
   return (
-    <PasswordGate
-      storageKey={`looka_admin_auth_${id}`}
-      correctPassword="9284"
-      title="ADMIN"
-      subtitle="관리자 전용 페이지"
-    >
+    <PasswordGate storageKey="looka_admin_master" correctPassword="9284" title="ADMIN" subtitle="관리자 전용 페이지">
       <AdminContent brandId={id} />
     </PasswordGate>
   );
 }
 
 function AdminContent({ brandId }: { brandId: string }) {
-  const [category, setCategory] = useState<Category>("home");
-  const [folders, setFolders] = useState<FolderRow[]>([]);
-  const [foldersLoading, setFoldersLoading] = useState(true);
-
-  const [selectedFolder, setSelectedFolder] = useState<FolderRow | null>(null);
-  const [locations, setLocations] = useState<LocationRow[]>([]);
-  const [locationsLoading, setLocationsLoading] = useState(false);
-
-  const [selectedLocation, setSelectedLocation] = useState<LocationRow | null>(null);
-  const [photos, setPhotos] = useState<PhotoRow[]>([]);
-  const [photosLoading, setPhotosLoading] = useState(false);
-
   const [toast, setToast] = useState<string | null>(null);
-
   function notify(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(null), 3000);
   }
 
-  const loadFolders = useCallback(async () => {
+  // ── 카테고리 ──
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState<CategoryRow | null>(null);
+
+  const loadCategories = useCallback(async () => {
     if (!supabase) return;
+    setCategoriesLoading(true);
+    const { data, error } = await supabase
+      .from("categories")
+      .select("id,slug,name,sort_order")
+      .eq("brand_id", Number(brandId))
+      .order("sort_order", { ascending: true });
+    if (error) {
+      notify("카테고리 테이블이 아직 없어요 — 마이그레이션 SQL을 먼저 실행해줘");
+      setCategories([]);
+      setCategoriesLoading(false);
+      return;
+    }
+    setCategories(data ?? []);
+    setSelectedCategory((prev) => prev ?? (data && data.length > 0 ? data[0] : null));
+    setCategoriesLoading(false);
+  }, [brandId]);
+
+  useEffect(() => {
+    loadCategories();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandId]);
+
+  const [newCatOpen, setNewCatOpen] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+  const [savingCat, setSavingCat] = useState(false);
+
+  async function createCategory() {
+    if (!newCatName.trim()) return;
+    setSavingCat(true);
+    try {
+      const res = await adminFetch("/api/admin/categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: Number(brandId), name: newCatName.trim() }),
+      });
+      setNewCatName("");
+      setNewCatOpen(false);
+      await loadCategories();
+      if (res.category) setSelectedCategory(res.category);
+      notify("카테고리를 추가했어요");
+    } catch (e: any) {
+      notify(e.message ?? "카테고리 추가 실패");
+    } finally {
+      setSavingCat(false);
+    }
+  }
+
+  const [editingCatId, setEditingCatId] = useState<string | null>(null);
+  const [editingCatName, setEditingCatName] = useState("");
+
+  async function saveEditCategory() {
+    if (!editingCatId || !editingCatName.trim()) {
+      setEditingCatId(null);
+      return;
+    }
+    try {
+      await adminFetch(`/api/admin/categories/${editingCatId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editingCatName.trim() }),
+      });
+      setEditingCatId(null);
+      await loadCategories();
+    } catch (e: any) {
+      notify(e.message ?? "이름 변경 실패");
+    }
+  }
+
+  async function deleteCategory(cat: CategoryRow) {
+    if (!confirm(`"${cat.name}" 카테고리를 삭제할까요?\n안의 폴더와 사진이 모두 함께 삭제됩니다.`)) return;
+    try {
+      await adminFetch(`/api/admin/categories/${cat.id}`, { method: "DELETE" });
+      if (selectedCategory?.id === cat.id) setSelectedCategory(null);
+      await loadCategories();
+      notify("카테고리를 삭제했어요");
+    } catch (e: any) {
+      notify(e.message ?? "카테고리 삭제 실패");
+    }
+  }
+
+  // ── 폴더 ──
+  const [folders, setFolders] = useState<FolderRow[]>([]);
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [selectedFolder, setSelectedFolder] = useState<FolderRow | null>(null);
+  const [locationId, setLocationId] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<PhotoRow[]>([]);
+  const [photosLoading, setPhotosLoading] = useState(false);
+
+  const loadFolders = useCallback(async () => {
+    if (!supabase || !selectedCategory) {
+      setFolders([]);
+      return;
+    }
     setFoldersLoading(true);
     const { data } = await supabase
       .from("folders")
       .select("id,category,folder_name,mmdd,label")
       .eq("brand_id", Number(brandId))
-      .eq("category", category)
+      .eq("category", selectedCategory.slug)
       .order("mmdd", { ascending: false });
     setFolders(data ?? []);
     setFoldersLoading(false);
-  }, [brandId, category]);
+  }, [brandId, selectedCategory]);
 
-  const loadLocations = useCallback(async (folderId: string) => {
-    if (!supabase) return;
-    setLocationsLoading(true);
-    const { data } = await supabase
-      .from("locations")
-      .select("id,folder_id,name,address,sort_order")
-      .eq("folder_id", folderId)
-      .order("sort_order", { ascending: true });
-    setLocations(data ?? []);
-    setLocationsLoading(false);
-  }, []);
+  useEffect(() => {
+    setSelectedFolder(null);
+    setLocationId(null);
+    setPhotos([]);
+    loadFolders();
+  }, [loadFolders]);
 
-  const loadPhotos = useCallback(async (locationId: string) => {
+  const loadPhotos = useCallback(async (locId: string) => {
     if (!supabase) return;
     setPhotosLoading(true);
     const { data } = await supabase
       .from("photos")
       .select("id,storage_path,sort_order")
-      .eq("location_id", locationId)
+      .eq("location_id", locId)
       .order("sort_order", { ascending: true });
     setPhotos(data ?? []);
     setPhotosLoading(false);
   }, []);
 
-  useEffect(() => {
-    setSelectedFolder(null);
-    setSelectedLocation(null);
-    loadFolders();
-  }, [loadFolders]);
-
-  function openFolder(folder: FolderRow) {
-    setSelectedFolder(folder);
-    setSelectedLocation(null);
-    loadLocations(folder.id);
+  // 폴더 하나당 사진을 걸어둘 "장소"를 화면에 노출하지 않고 자동으로 마련해줌
+  async function ensureLocation(folder: FolderRow): Promise<string | null> {
+    if (!supabase) return null;
+    const { data } = await supabase.from("locations").select("id").eq("folder_id", folder.id).limit(1);
+    if (data && data.length > 0) return data[0].id;
+    try {
+      const res = await adminFetch("/api/admin/locations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder_id: folder.id, name: folder.label, address: "" }),
+      });
+      return res.location?.id ?? null;
+    } catch (e: any) {
+      notify(e.message ?? "장소 준비 실패");
+      return null;
+    }
   }
 
-  function openLocation(loc: LocationRow) {
-    setSelectedLocation(loc);
-    loadPhotos(loc.id);
+  async function openFolder(folder: FolderRow) {
+    setSelectedFolder(folder);
+    setPhotos([]);
+    setPhotosLoading(true);
+    const locId = await ensureLocation(folder);
+    setLocationId(locId);
+    if (locId) await loadPhotos(locId);
+    setPhotosLoading(false);
   }
 
   // ── 새 폴더 ──
@@ -139,19 +216,25 @@ function AdminContent({ brandId }: { brandId: string }) {
   const [savingFolder, setSavingFolder] = useState(false);
 
   async function createFolder() {
-    if (!newMmdd.trim() || !newLabel.trim()) return;
+    if (!selectedCategory || !newMmdd.trim() || !newLabel.trim()) return;
     setSavingFolder(true);
     try {
-      await adminFetch("/api/admin/folders", {
+      const res = await adminFetch("/api/admin/folders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brand_id: Number(brandId), category, mmdd: newMmdd.trim(), label: newLabel.trim() }),
+        body: JSON.stringify({
+          brand_id: Number(brandId),
+          category: selectedCategory.slug,
+          mmdd: newMmdd.trim(),
+          label: newLabel.trim(),
+        }),
       });
       setNewMmdd("");
       setNewLabel("");
       setNewFolderOpen(false);
       await loadFolders();
-      notify("폴더를 만들었어요");
+      notify("폴더를 만들었어요 — 바로 사진을 올려보세요");
+      if (res.folder) await openFolder(res.folder);
     } catch (e: any) {
       notify(e.message ?? "폴더 생성 실패");
     } finally {
@@ -160,56 +243,18 @@ function AdminContent({ brandId }: { brandId: string }) {
   }
 
   async function deleteFolder(folder: FolderRow) {
-    if (!confirm(`"${folder.folder_name}" 폴더를 삭제할까요?\n안에 있는 장소와 사진이 모두 함께 삭제됩니다.`)) return;
+    if (!confirm(`"${folder.folder_name}" 폴더를 삭제할까요?\n안에 있는 사진이 모두 함께 삭제됩니다.`)) return;
     try {
       await adminFetch(`/api/admin/folders/${folder.id}`, { method: "DELETE" });
       if (selectedFolder?.id === folder.id) {
         setSelectedFolder(null);
-        setSelectedLocation(null);
+        setLocationId(null);
+        setPhotos([]);
       }
       await loadFolders();
       notify("폴더를 삭제했어요");
     } catch (e: any) {
       notify(e.message ?? "폴더 삭제 실패");
-    }
-  }
-
-  // ── 새 장소 ──
-  const [newLocOpen, setNewLocOpen] = useState(false);
-  const [newLocName, setNewLocName] = useState("");
-  const [newLocAddress, setNewLocAddress] = useState("");
-  const [savingLoc, setSavingLoc] = useState(false);
-
-  async function createLocation() {
-    if (!selectedFolder || !newLocName.trim() || !newLocAddress.trim()) return;
-    setSavingLoc(true);
-    try {
-      await adminFetch("/api/admin/locations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder_id: selectedFolder.id, name: newLocName.trim(), address: newLocAddress.trim() }),
-      });
-      setNewLocName("");
-      setNewLocAddress("");
-      setNewLocOpen(false);
-      await loadLocations(selectedFolder.id);
-      notify("장소를 추가했어요");
-    } catch (e: any) {
-      notify(e.message ?? "장소 추가 실패");
-    } finally {
-      setSavingLoc(false);
-    }
-  }
-
-  async function deleteLocation(loc: LocationRow) {
-    if (!confirm(`"${loc.name}"을(를) 삭제할까요?\n등록된 사진도 함께 삭제됩니다.`)) return;
-    try {
-      await adminFetch(`/api/admin/locations/${loc.id}`, { method: "DELETE" });
-      if (selectedLocation?.id === loc.id) setSelectedLocation(null);
-      if (selectedFolder) await loadLocations(selectedFolder.id);
-      notify("장소를 삭제했어요");
-    } catch (e: any) {
-      notify(e.message ?? "장소 삭제 실패");
     }
   }
 
@@ -220,7 +265,7 @@ function AdminContent({ brandId }: { brandId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function uploadFiles(files: FileList | File[]) {
-    if (!selectedLocation) return;
+    if (!locationId) return;
     const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
     if (list.length === 0) return;
     setUploading(true);
@@ -229,7 +274,7 @@ function AdminContent({ brandId }: { brandId: string }) {
       try {
         const form = new FormData();
         form.append("file", list[i]);
-        form.append("location_id", selectedLocation.id);
+        form.append("location_id", locationId);
         await adminFetch("/api/admin/photos", { method: "POST", body: form });
       } catch (e: any) {
         notify(`업로드 실패: ${e.message ?? list[i].name}`);
@@ -238,7 +283,7 @@ function AdminContent({ brandId }: { brandId: string }) {
     }
     setUploading(false);
     setUploadProgress(null);
-    await loadPhotos(selectedLocation.id);
+    await loadPhotos(locationId);
     notify("사진 업로드 완료");
   }
 
@@ -246,7 +291,7 @@ function AdminContent({ brandId }: { brandId: string }) {
     if (!confirm("이 사진을 삭제할까요?")) return;
     try {
       await adminFetch(`/api/admin/photos/${photo.id}`, { method: "DELETE" });
-      if (selectedLocation) await loadPhotos(selectedLocation.id);
+      if (locationId) await loadPhotos(locationId);
       notify("사진을 삭제했어요");
     } catch (e: any) {
       notify(e.message ?? "사진 삭제 실패");
@@ -257,10 +302,9 @@ function AdminContent({ brandId }: { brandId: string }) {
     <div className="relative min-h-screen bg-black px-4 py-10 sm:px-8 sm:py-16">
       <div className="pointer-events-none fixed left-1/2 top-0 h-[500px] w-[900px] -translate-x-1/2 rounded-full bg-[#deff9a]/[0.04] blur-[140px]" />
 
-      {/* 브레드크럼 */}
       <div className="relative z-10 mb-2 font-mono text-xs font-light tracking-widest text-white/30">
-        <Link href="/" className="hover:text-[#deff9a] transition-colors">
-          ARCHIVE
+        <Link href="/admin" className="hover:text-[#deff9a] transition-colors">
+          ← 전체 프로덕션
         </Link>{" "}
         / BRAND {String(brandId).padStart(2, "0")} / <span className="text-[#deff9a]">ADMIN</span>
       </div>
@@ -268,32 +312,98 @@ function AdminContent({ brandId }: { brandId: string }) {
         사진 <span className="text-[#deff9a]">관리자</span>
       </h1>
 
-      {/* 카테고리 탭 */}
-      <div className="relative z-10 mb-6 flex gap-2">
-        {CATEGORIES.map((cat) => {
-          const Icon = cat.icon;
-          const active = cat.slug === category;
-          return (
-            <button
-              key={cat.slug}
-              onClick={() => setCategory(cat.slug)}
-              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-light tracking-widest transition-all ${
-                active
-                  ? "border-[#deff9a]/40 bg-[#deff9a]/[0.08] text-[#deff9a]"
-                  : "border-white/10 text-white/50 hover:border-white/20 hover:text-white"
-              }`}
-            >
-              <Icon size={14} strokeWidth={1.5} />
-              {cat.name}
+      {/* 카테고리 탭 — 추가/수정/삭제 가능 */}
+      <div className="relative z-10 mb-6 flex flex-wrap items-center gap-2">
+        {categoriesLoading ? (
+          <LoadingRow />
+        ) : (
+          categories.map((cat) => {
+            const active = selectedCategory?.id === cat.id;
+            const isEditing = editingCatId === cat.id;
+            if (isEditing) {
+              return (
+                <div
+                  key={cat.id}
+                  className="flex items-center gap-1 rounded-xl border border-[#deff9a]/40 bg-[#deff9a]/[0.08] px-2 py-1.5"
+                >
+                  <input
+                    value={editingCatName}
+                    onChange={(e) => setEditingCatName(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && saveEditCategory()}
+                    autoFocus
+                    className="w-24 bg-transparent text-xs text-[#deff9a] outline-none"
+                  />
+                  <button onClick={saveEditCategory} className="text-[#deff9a]">
+                    <Check size={13} />
+                  </button>
+                  <button onClick={() => setEditingCatId(null)} className="text-white/40 hover:text-white">
+                    <X size={13} />
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <div
+                key={cat.id}
+                className={`group flex items-center gap-1.5 rounded-xl border px-4 py-2.5 text-xs font-light tracking-widest transition-all ${
+                  active
+                    ? "border-[#deff9a]/40 bg-[#deff9a]/[0.08] text-[#deff9a]"
+                    : "border-white/10 text-white/50 hover:border-white/20 hover:text-white"
+                }`}
+              >
+                <button onClick={() => setSelectedCategory(cat)}>{cat.name}</button>
+                <span className="hidden items-center gap-1 group-hover:flex">
+                  <button
+                    onClick={() => {
+                      setEditingCatId(cat.id);
+                      setEditingCatName(cat.name);
+                    }}
+                    className="text-white/30 hover:text-white"
+                  >
+                    <Pencil size={11} />
+                  </button>
+                  <button onClick={() => deleteCategory(cat)} className="text-white/30 hover:text-red-400">
+                    <Trash2 size={11} />
+                  </button>
+                </span>
+              </div>
+            );
+          })
+        )}
+
+        {newCatOpen ? (
+          <div className="flex items-center gap-1 rounded-xl border border-[#deff9a]/20 bg-[#deff9a]/[0.04] px-2 py-1.5">
+            <input
+              value={newCatName}
+              onChange={(e) => setNewCatName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && createCategory()}
+              placeholder="카테고리 이름"
+              autoFocus
+              className="w-24 bg-transparent text-xs text-white outline-none placeholder:text-white/30"
+            />
+            <button onClick={createCategory} disabled={savingCat} className="text-[#deff9a] disabled:opacity-50">
+              <Check size={13} />
             </button>
-          );
-        })}
+            <button onClick={() => setNewCatOpen(false)} className="text-white/40 hover:text-white">
+              <X size={13} />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setNewCatOpen(true)}
+            className="flex items-center gap-1.5 rounded-xl border border-dashed border-white/15 px-3 py-2.5 text-xs text-white/40 transition-colors hover:border-[#deff9a]/40 hover:text-[#deff9a]"
+          >
+            <Plus size={13} /> 카테고리
+          </button>
+        )}
       </div>
 
-      <div className="relative z-10 mx-auto grid max-w-6xl grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* 1열: 폴더 */}
-        <Panel title="폴더">
-          {foldersLoading ? (
+      <div className="relative z-10 mx-auto grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-[1fr_1.6fr]">
+        {/* 폴더 */}
+        <Panel title="폴더" disabled={!selectedCategory}>
+          {!selectedCategory ? (
+            <EmptyHint text="카테고리를 먼저 만들어보세요" />
+          ) : foldersLoading ? (
             <LoadingRow />
           ) : (
             <div className="space-y-2">
@@ -330,7 +440,7 @@ function AdminContent({ brandId }: { brandId: string }) {
                       disabled={savingFolder}
                       className="flex-1 rounded-lg bg-[#deff9a] py-2 text-xs font-medium text-black disabled:opacity-50"
                     >
-                      {savingFolder ? "저장 중..." : "만들기"}
+                      {savingFolder ? "저장 중..." : "만들고 바로 업로드"}
                     </button>
                     <button
                       onClick={() => setNewFolderOpen(false)}
@@ -347,67 +457,10 @@ function AdminContent({ brandId }: { brandId: string }) {
           )}
         </Panel>
 
-        {/* 2열: 장소 */}
-        <Panel title="장소" disabled={!selectedFolder}>
+        {/* 사진 */}
+        <Panel title={selectedFolder ? `사진 — ${selectedFolder.folder_name}` : "사진"} disabled={!selectedFolder}>
           {!selectedFolder ? (
-            <EmptyHint text="폴더를 먼저 선택하세요" />
-          ) : locationsLoading ? (
-            <LoadingRow />
-          ) : (
-            <div className="space-y-2">
-              {locations.map((loc) => (
-                <RowCard
-                  key={loc.id}
-                  active={selectedLocation?.id === loc.id}
-                  onClick={() => openLocation(loc)}
-                  onDelete={() => deleteLocation(loc)}
-                  label={loc.name}
-                  sublabel={loc.address}
-                />
-              ))}
-              {locations.length === 0 && <EmptyHint text="장소가 없어요" />}
-
-              {newLocOpen ? (
-                <div className="space-y-2 rounded-xl border border-[#deff9a]/20 bg-[#deff9a]/[0.04] p-3">
-                  <input
-                    value={newLocName}
-                    onChange={(e) => setNewLocName(e.target.value)}
-                    placeholder="장소 이름"
-                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
-                  />
-                  <input
-                    value={newLocAddress}
-                    onChange={(e) => setNewLocAddress(e.target.value)}
-                    placeholder="주소"
-                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      onClick={createLocation}
-                      disabled={savingLoc}
-                      className="flex-1 rounded-lg bg-[#deff9a] py-2 text-xs font-medium text-black disabled:opacity-50"
-                    >
-                      {savingLoc ? "저장 중..." : "추가하기"}
-                    </button>
-                    <button
-                      onClick={() => setNewLocOpen(false)}
-                      className="rounded-lg border border-white/10 px-3 py-2 text-xs text-white/50 hover:text-white"
-                    >
-                      취소
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <AddButton label="새 장소" onClick={() => setNewLocOpen(true)} />
-              )}
-            </div>
-          )}
-        </Panel>
-
-        {/* 3열: 사진 */}
-        <Panel title="사진" disabled={!selectedLocation}>
-          {!selectedLocation ? (
-            <EmptyHint text="장소를 먼저 선택하세요" />
+            <EmptyHint text="폴더를 클릭하면 바로 사진을 올릴 수 있어요" />
           ) : (
             <div
               onDragOver={(e) => {
@@ -427,7 +480,7 @@ function AdminContent({ brandId }: { brandId: string }) {
               {photosLoading ? (
                 <LoadingRow />
               ) : (
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                   {photos.map((p) => (
                     <div key={p.id} className="group relative aspect-square overflow-hidden rounded-lg border border-white/10">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -514,14 +567,12 @@ function RowCard({
   onDelete,
   icon,
   label,
-  sublabel,
 }: {
   active?: boolean;
   onClick: () => void;
   onDelete: () => void;
   icon?: React.ReactNode;
   label: string;
-  sublabel?: string;
 }) {
   return (
     <div
@@ -532,10 +583,7 @@ function RowCard({
     >
       <div className="flex min-w-0 items-center gap-2">
         {icon && <span className={active ? "text-[#deff9a]" : "text-white/30"}>{icon}</span>}
-        <div className="min-w-0">
-          <div className={`truncate text-xs font-light ${active ? "text-[#deff9a]" : "text-white/70"}`}>{label}</div>
-          {sublabel && <div className="truncate text-[10px] text-white/25">{sublabel}</div>}
-        </div>
+        <div className={`truncate text-xs font-light ${active ? "text-[#deff9a]" : "text-white/70"}`}>{label}</div>
       </div>
       <button
         onClick={(e) => {

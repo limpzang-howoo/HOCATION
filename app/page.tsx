@@ -75,6 +75,10 @@ function HomeGrid() {
 
       <footer className="relative z-10 mt-16 text-center text-[10px] tracking-widest text-white/10">
         © 2026 LOCATION ARCHIVE. ALL RIGHTS RESERVED.
+        <br />
+        <Link href="/admin" className="mt-2 inline-block text-white/15 hover:text-[#deff9a]/60 transition-colors">
+          ADMIN
+        </Link>
       </footer>
     </div>
   );
