@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Maximize2, X } from "lucide-react";
+import { supabase, locationPhotoUrl } from "../../lib/supabaseClient";
 
 // Kakao Maps JavaScript 키 — 도메인 제한 키라 클라이언트 노출이 안전함 (hocation.netlify.app 로 제한 등록됨)
 const KAKAO_JS_KEY = "5abc14a5fd9dcdacbb5802bd0e25dc33";
@@ -104,6 +105,47 @@ function buildLocations(raw: RawLocation[]): LocationEntry[] {
 
 const SAMPLE_LOCATIONS: LocationEntry[] = buildLocations(RAW_LOCATIONS);
 
+// Supabase(folders + locations + photos)에서 실제 데이터를 가져오고,
+// 연결 안 되어있거나 해당 브랜드에 데이터가 없으면 샘플 데이터로 자연스럽게 폴백.
+async function fetchLocations(brandId?: string | number): Promise<LocationEntry[]> {
+  if (!supabase || !brandId) return SAMPLE_LOCATIONS;
+  try {
+    const { data, error } = await supabase
+      .from("locations")
+      .select("id,name,address,sort_order,folders!inner(category,mmdd,label,brand_id),photos(storage_path,sort_order)")
+      .eq("folders.brand_id", Number(brandId))
+      .order("sort_order", { ascending: true });
+
+    if (error || !data || data.length === 0) return SAMPLE_LOCATIONS;
+
+    const latestByCategory = new Map<LocationCategory, string>();
+    data.forEach((row: any) => {
+      const cat = row.folders.category as LocationCategory;
+      const mmdd = row.folders.mmdd as string;
+      if (!latestByCategory.has(cat) || mmdd > latestByCategory.get(cat)!) latestByCategory.set(cat, mmdd);
+    });
+
+    return data.map((row: any): LocationEntry => {
+      const cat = row.folders.category as LocationCategory;
+      const mmdd = row.folders.mmdd as string;
+      const dateLabel = mmdd.length === 4 ? `${mmdd.slice(0, 2)}/${mmdd.slice(2, 4)}` : mmdd;
+      const photoRows = [...(row.photos ?? [])].sort((a: any, b: any) => a.sort_order - b.sort_order);
+      const photos = photoRows.length > 0 ? photoRows.map((p: any) => locationPhotoUrl(p.storage_path)) : samplePhotos(row.name);
+      return {
+        name: row.name,
+        address: row.address,
+        category: cat,
+        label: row.folders.label,
+        dateLabel,
+        isLatest: mmdd === latestByCategory.get(cat),
+        photos,
+      };
+    });
+  } catch {
+    return SAMPLE_LOCATIONS;
+  }
+}
+
 declare global {
   interface Window {
     kakao: any;
@@ -153,6 +195,7 @@ function tooltipHtml(loc: LocationEntry) {
 
 function renderMarkers(
   map: any,
+  locations: LocationEntry[],
   onDone?: (entries: MarkerEntry[]) => void,
   onSelect?: (loc: LocationEntry | null) => void
 ) {
@@ -166,7 +209,7 @@ function renderMarkers(
   // 빈 지도 영역을 클릭하면 선택 해제 (사진 패널 닫기)
   if (onSelect) kakao.maps.event.addListener(map, "click", () => onSelect(null));
 
-  SAMPLE_LOCATIONS.forEach((loc) => {
+  locations.forEach((loc) => {
     geocoder.addressSearch(loc.address, (result: any[], resultStatus: string) => {
       done += 1;
       if (resultStatus === kakao.maps.services.Status.OK && result[0]) {
@@ -196,7 +239,7 @@ function renderMarkers(
         bounds.extend(coords);
         found += 1;
       }
-      if (done === SAMPLE_LOCATIONS.length) {
+      if (done === locations.length) {
         if (found > 0) map.setBounds(bounds);
         onDone?.(entries);
       }
@@ -284,7 +327,7 @@ function PhotoPreviewPanel({
   );
 }
 
-export default function KakaoMapWidget() {
+export default function KakaoMapWidget({ brandId }: { brandId?: string | number } = {}) {
   const mapRef = useRef<HTMLDivElement>(null);
   const modalMapRef = useRef<HTMLDivElement>(null);
   const compactEntriesRef = useRef<MarkerEntry[]>([]);
@@ -293,6 +336,7 @@ export default function KakaoMapWidget() {
   const [expanded, setExpanded] = useState(false);
   const [active, setActive] = useState<Set<LocationCategory>>(new Set(ALL_CATEGORIES));
   const [selected, setSelected] = useState<LocationEntry | null>(null);
+  const [locations, setLocations] = useState<LocationEntry[]>(SAMPLE_LOCATIONS);
 
   function openExpanded(open: boolean) {
     setSelected(null);
@@ -317,12 +361,13 @@ export default function KakaoMapWidget() {
     });
   }, [active]);
 
-  // 작은 위젯 지도
+  // 작은 위젯 지도 — SDK 로드 + Supabase 데이터 조회를 함께 기다린 뒤 렌더링
   useEffect(() => {
     let cancelled = false;
-    loadKakaoSdk()
-      .then(() => {
+    Promise.all([loadKakaoSdk(), fetchLocations(brandId)])
+      .then(([, locs]) => {
         if (cancelled || !mapRef.current) return;
+        setLocations(locs);
         const { kakao } = window;
         const map = new kakao.maps.Map(mapRef.current, {
           center: new kakao.maps.LatLng(37.5665, 126.978),
@@ -330,6 +375,7 @@ export default function KakaoMapWidget() {
         });
         renderMarkers(
           map,
+          locs,
           (entries) => {
             if (cancelled) return;
             compactEntriesRef.current = entries;
@@ -342,7 +388,8 @@ export default function KakaoMapWidget() {
     return () => {
       cancelled = true;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandId]);
 
   // 확대 모달 지도 (열릴 때마다 별도로 초기화)
   useEffect(() => {
@@ -357,6 +404,7 @@ export default function KakaoMapWidget() {
       });
       renderMarkers(
         map,
+        locations,
         (entries) => {
           if (cancelled) return;
           modalEntriesRef.current = entries;

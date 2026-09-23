@@ -100,7 +100,7 @@ function ProductionContent({ id }: { id: string }) {
 
       {/* 하단 HUD: 지도 / 날씨 (좌우 대칭) */}
       <div className="relative z-10 mx-auto mt-12 grid max-w-3xl grid-cols-1 gap-4 sm:grid-cols-2">
-        <KakaoMapWidget />
+        <KakaoMapWidget brandId={id} />
         <WeatherWidget />
       </div>
     </div>
