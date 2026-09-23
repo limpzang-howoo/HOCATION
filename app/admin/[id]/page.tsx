@@ -263,6 +263,44 @@ function AdminContent({ brandId }: { brandId: string }) {
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  // 드래그로 폴더를 통째로 놓으면 그 안의 이미지 파일들을 재귀적으로 모두 찾아냄
+  function readEntryAsFiles(entry: any): Promise<File[]> {
+    return new Promise((resolve) => {
+      if (!entry) return resolve([]);
+      if (entry.isFile) {
+        entry.file((file: File) => resolve([file]), () => resolve([]));
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        const collected: any[] = [];
+        const readBatch = () => {
+          reader.readEntries(async (batch: any[]) => {
+            if (batch.length === 0) {
+              const nested = await Promise.all(collected.map(readEntryAsFiles));
+              resolve(nested.flat());
+            } else {
+              collected.push(...batch);
+              readBatch();
+            }
+          }, () => resolve([]));
+        };
+        readBatch();
+      } else {
+        resolve([]);
+      }
+    });
+  }
+
+  async function filesFromDrop(dt: DataTransfer): Promise<File[]> {
+    const items = Array.from(dt.items || []);
+    const entries = items.map((it: any) => it.webkitGetAsEntry?.()).filter(Boolean);
+    if (entries.length > 0) {
+      const nested = await Promise.all(entries.map(readEntryAsFiles));
+      return nested.flat();
+    }
+    return Array.from(dt.files || []);
+  }
 
   async function uploadFiles(files: FileList | File[]) {
     if (!locationId) return;
@@ -468,10 +506,11 @@ function AdminContent({ brandId }: { brandId: string }) {
                 setDragOver(true);
               }}
               onDragLeave={() => setDragOver(false)}
-              onDrop={(e) => {
+              onDrop={async (e) => {
                 e.preventDefault();
                 setDragOver(false);
-                if (e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
+                const files = await filesFromDrop(e.dataTransfer);
+                if (files.length > 0) uploadFiles(files);
               }}
               className={`rounded-xl border-2 border-dashed p-2 transition-colors ${
                 dragOver ? "border-[#deff9a]/60 bg-[#deff9a]/[0.04]" : "border-transparent"
@@ -513,6 +552,15 @@ function AdminContent({ brandId }: { brandId: string }) {
                       </>
                     )}
                   </button>
+
+                  <button
+                    onClick={() => folderInputRef.current?.click()}
+                    disabled={uploading}
+                    className="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 text-white/40 transition-colors hover:border-[#deff9a]/40 hover:text-[#deff9a] disabled:opacity-50"
+                  >
+                    <Folder size={18} strokeWidth={1.5} />
+                    <span className="text-[10px] tracking-wide">폴더째 올리기</span>
+                  </button>
                 </div>
               )}
               {photos.length === 0 && !photosLoading && (
@@ -526,6 +574,17 @@ function AdminContent({ brandId }: { brandId: string }) {
                 accept="image/*"
                 multiple
                 className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) uploadFiles(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <input
+                ref={folderInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                {...({ webkitdirectory: "true", directory: "true" } as any)}
                 onChange={(e) => {
                   if (e.target.files) uploadFiles(e.target.files);
                   e.target.value = "";
