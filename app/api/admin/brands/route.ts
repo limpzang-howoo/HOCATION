@@ -19,14 +19,19 @@ export async function POST(req: NextRequest) {
   if (!supabaseAdmin) return NextResponse.json({ error: "admin client not configured" }, { status: 500 });
 
   const body = await req.json();
-  const { name, access_code } = body ?? {};
+  const { name, access_code, code } = body ?? {};
   if (!name) return NextResponse.json({ error: "name required" }, { status: 400 });
 
   const slug = `brand-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
   const { data: brand, error } = await supabaseAdmin
     .from("brands")
-    .insert({ name, slug, access_code: (access_code && String(access_code).trim()) || "1234" })
+    .insert({
+      name,
+      slug,
+      access_code: (access_code && String(access_code).trim()) || "1234",
+      code: code && String(code).trim() ? String(code).trim() : null,
+    })
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

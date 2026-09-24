@@ -3,146 +3,172 @@
 import { useEffect, useRef, useState } from "react";
 import { Maximize2, X } from "lucide-react";
 import { supabase, locationPhotoUrl } from "../../lib/supabaseClient";
+import { parseRound } from "../../lib/parseFolder";
 
 // Kakao Maps JavaScript 키 — 도메인 제한 키라 클라이언트 노출이 안전함 (hocation.netlify.app 로 제한 등록됨)
 const KAKAO_JS_KEY = "5abc14a5fd9dcdacbb5802bd0e25dc33";
 
-type LocationCategory = "home" | "cafe" | "playground";
+// ── 공간(집/공장/복도/영화관…) ──
+// 고정 목록 없이 DB의 categories에서 가져오고, 핀 색상은 순서대로 팔레트에서 자동 배정.
+type Space = { slug: string; name: string; color: string };
 
-const CATEGORY_LABELS: Record<LocationCategory, string> = {
-  home: "집",
-  cafe: "카페",
-  playground: "운동장",
-};
+const PIN_PALETTE = ["#1a1a1a", "#ef4444", "#16a34a", "#3b82f6", "#f59e0b", "#a855f7", "#ec4899", "#14b8a6"];
 
-// 공간 카테고리별 핀 색상
-const CATEGORY_COLORS: Record<LocationCategory, string> = {
-  home: "#1a1a1a", // 집 공간 — 검정
-  cafe: "#ef4444", // 카페 공간 — 빨강
-  playground: "#16a34a", // 운동장 공간 — 초록
-};
+function buildSpaces(list: { slug: string; name: string }[]): Space[] {
+  return list.map((s, i) => ({ ...s, color: PIN_PALETTE[i % PIN_PALETTE.length] }));
+}
 
-const ALL_CATEGORIES: LocationCategory[] = ["home", "cafe", "playground"];
+function makeColorOf(spaces: Space[]) {
+  return (slug: string) => spaces.find((s) => s.slug === slug)?.color ?? PIN_PALETTE[0];
+}
 
-// ── 폴더명으로 자료 회차 자동 인식 ──
-// 업로드 규칙: "MMDD_라벨" (예: 0918_1차물색, 0925_2차압축, 1002_최종픽). "라벨" 부분은
-// 폴더에 적은 텍스트를 그대로 지도에 보여줌 — 회차 번호는 따로 매기지 않음.
-// 다만 날짜는 같은 카테고리 안에서 어떤 폴더가 가장 최근 것인지 가려내는 데만 쓰임(핀 강조용).
+// ── 폴더 규칙 ──
+// 공간 > 회차 폴더("집1차") > 로케이션 폴더("YYYYMMDD-장소명-주소") > 사진
+// 핀 = 로케이션 하나. 핀 속 숫자 = 회차, 색 = 공간, 같은 공간에서 가장 높은 회차의 핀은 크게 강조.
 type RawLocation = {
-  category: LocationCategory;
-  folderName: string; // 예: "0918_1차물색"
+  category: string; // 공간 slug
+  round: number | null;
+  mmdd: string; // 회차 폴더 날짜 (fallback 용)
+  shootDate?: string | null; // 로케이션 폴더 날짜 "YYYY-MM-DD"
+  folderLabel: string; // 회차를 못 읽을 때 그대로 보여줄 폴더 라벨
   name: string;
   address: string;
+  photos?: string[];
 };
-
-// TODO: 실제로는 Supabase에 업로드된 폴더 목록을 그대로 이 형태로 넣으면 됨.
-// 지금은 구조/디자인 단계라 "MMDD_라벨" 규칙을 그대로 샘플로 재현. 라벨은 사용자가 원하는 대로 자유롭게 적으면 됨.
-const RAW_LOCATIONS: RawLocation[] = [
-  { category: "home", folderName: "0918_초기물색", name: "테헤란로 사옥", address: "서울 강남구 테헤란로 152" },
-  { category: "home", folderName: "0918_초기물색", name: "왕십리 주택", address: "서울 성동구 왕십리로 115" },
-  { category: "home", folderName: "0925_최종제안", name: "연남동 단독주택", address: "서울 마포구 성미산로 100" },
-  { category: "cafe", folderName: "0918_후보리스트", name: "합정 카페", address: "서울 마포구 양화로 133" },
-  { category: "playground", folderName: "0918_1차물색", name: "잠실 운동장", address: "서울 송파구 올림픽로 25" },
-  { category: "playground", folderName: "0925_2차압축", name: "고척 운동장", address: "서울 구로구 경인로 430" },
-  { category: "playground", folderName: "1002_최종픽", name: "목동 운동장", address: "서울 양천구 안양천로 939" },
-];
 
 type LocationEntry = {
   name: string;
   address: string;
-  category: LocationCategory;
-  label: string; // 폴더명에서 따온 라벨 (예: "1차물색") — 화면에 그대로 표시
+  category: string; // 공간 slug
+  round: number | null;
+  label: string; // 화면 표시용 — 예: "집1차"
   dateLabel: string; // "09/18"
-  isLatest: boolean; // 같은 카테고리 안에서 가장 최근 폴더인지
-  photos: string[]; // 폴더 맨 위 사진 1~2장 (지금은 샘플 이미지, 나중에 실제 업로드 사진으로 교체)
+  isLatest: boolean; // 같은 공간 안에서 가장 최근 회차인지
+  photos: string[];
 };
 
-// TODO: 실제로는 각 폴더에 업로드된 사진 중 맨 위 1~2장의 실제 URL로 교체.
-// 지금은 구조/디자인 단계라 장소명을 시드로 한 고정 샘플 이미지를 사용.
+const SAMPLE_SPACES = buildSpaces([
+  { slug: "home", name: "집" },
+  { slug: "factory", name: "공장" },
+  { slug: "hallway", name: "복도" },
+  { slug: "cinema", name: "영화관" },
+]);
+
+const SAMPLE_RAW: RawLocation[] = [
+  { category: "home", round: 1, mmdd: "0918", folderLabel: "집1차", name: "왕십리 주택", address: "서울 성동구 왕십리로 115" },
+  { category: "home", round: 2, mmdd: "0925", folderLabel: "집2차", name: "연남동 단독주택", address: "서울 마포구 성미산로 100" },
+  { category: "factory", round: 1, mmdd: "0918", folderLabel: "공장1차", name: "잠실 창고", address: "서울 송파구 올림픽로 25" },
+  { category: "factory", round: 2, mmdd: "0925", folderLabel: "공장2차", name: "고척 공장", address: "서울 구로구 경인로 430" },
+  { category: "factory", round: 3, mmdd: "1002", folderLabel: "공장3차", name: "목동 공장", address: "서울 양천구 안양천로 939" },
+  { category: "hallway", round: 1, mmdd: "0918", folderLabel: "복도1차", name: "테헤란로 사옥 복도", address: "서울 강남구 테헤란로 152" },
+  { category: "cinema", round: 1, mmdd: "0918", folderLabel: "영화관1차", name: "합정 극장", address: "서울 마포구 양화로 133" },
+];
+
+// TODO: 사진이 없는 로케이션은 장소명을 시드로 한 고정 샘플 이미지 사용.
 function samplePhotos(seed: string): string[] {
   const key = encodeURIComponent(seed);
   return [`https://picsum.photos/seed/${key}-1/400/300`, `https://picsum.photos/seed/${key}-2/400/300`];
 }
 
-function parseFolderName(folderName: string): { mmdd: string; label: string } | null {
-  const m = folderName.match(/^(\d{4})_(.+)$/); // MMDD_라벨
-  if (!m) return null;
-  return { mmdd: m[1], label: m[2] };
+function toDateLabel(shootDate?: string | null, mmdd?: string): string {
+  const d = shootDate?.match(/^\d{4}-(\d{2})-(\d{2})/);
+  if (d) return `${d[1]}/${d[2]}`;
+  if (mmdd && mmdd.length === 4) return `${mmdd.slice(0, 2)}/${mmdd.slice(2, 4)}`;
+  return "";
 }
 
-// 폴더명 규칙(MMDD_라벨)에서 라벨은 그대로 쓰고, 날짜는 "최신 폴더" 판별에만 사용
-function buildLocations(raw: RawLocation[]): LocationEntry[] {
-  const byCategory: Record<LocationCategory, RawLocation[]> = { home: [], cafe: [], playground: [] };
-  raw.forEach((r) => byCategory[r.category].push(r));
+// 회차 비교: 회차 번호 우선, 없으면 날짜(mmdd)
+function cmpRank(a: RawLocation, b: RawLocation) {
+  return (a.round ?? 0) - (b.round ?? 0) || a.mmdd.localeCompare(b.mmdd);
+}
 
-  const result: LocationEntry[] = [];
+function buildLocations(raw: RawLocation[], spaces: Space[]): LocationEntry[] {
+  const nameOf = new Map(spaces.map((s) => [s.slug, s.name]));
+  const usable = raw.filter((r) => r.address.trim()); // 주소 없으면 핀을 못 찍음
 
-  (Object.keys(byCategory) as LocationCategory[]).forEach((cat) => {
-    const items = byCategory[cat];
-    const latestMmdd = items.reduce((max, r) => {
-      const mmdd = parseFolderName(r.folderName)?.mmdd ?? "0000";
-      return mmdd > max ? mmdd : max;
-    }, "0000");
-
-    items.forEach((r) => {
-      const parsed = parseFolderName(r.folderName);
-      const mmdd = parsed?.mmdd ?? "0000";
-      const dateLabel = mmdd.length === 4 ? `${mmdd.slice(0, 2)}/${mmdd.slice(2, 4)}` : mmdd;
-      result.push({
-        name: r.name,
-        address: r.address,
-        category: r.category,
-        label: parsed?.label ?? r.folderName,
-        dateLabel,
-        isLatest: mmdd === latestMmdd,
-        photos: samplePhotos(r.name),
-      });
-    });
+  const best = new Map<string, RawLocation>();
+  usable.forEach((r) => {
+    const cur = best.get(r.category);
+    if (!cur || cmpRank(r, cur) > 0) best.set(r.category, r);
   });
 
-  return result;
+  return usable.map((r) => ({
+    name: r.name,
+    address: r.address,
+    category: r.category,
+    round: r.round,
+    label: r.round != null ? `${nameOf.get(r.category) ?? ""}${r.round}차` : r.folderLabel,
+    dateLabel: toDateLabel(r.shootDate, r.mmdd),
+    isLatest: cmpRank(r, best.get(r.category)!) === 0,
+    photos: r.photos && r.photos.length > 0 ? r.photos : samplePhotos(r.name),
+  }));
 }
 
-const SAMPLE_LOCATIONS: LocationEntry[] = buildLocations(RAW_LOCATIONS);
+type LoadResult = { spaces: Space[]; locations: LocationEntry[] };
 
-// Supabase(folders + locations + photos)에서 실제 데이터를 가져오고,
+const SAMPLE_RESULT: LoadResult = {
+  spaces: SAMPLE_SPACES,
+  locations: buildLocations(SAMPLE_RAW, SAMPLE_SPACES),
+};
+const SAMPLE_LOCATIONS = SAMPLE_RESULT.locations;
+
+// Supabase(categories + folders + locations + photos)에서 실제 데이터를 가져오고,
 // 연결 안 되어있거나 해당 브랜드에 데이터가 없으면 샘플 데이터로 자연스럽게 폴백.
-async function fetchLocations(brandId?: string | number): Promise<LocationEntry[]> {
-  if (!supabase || !brandId) return SAMPLE_LOCATIONS;
+async function fetchLocations(brandId?: string | number): Promise<LoadResult> {
+  if (!supabase || !brandId) return SAMPLE_RESULT;
   try {
-    const { data, error } = await supabase
-      .from("locations")
-      .select("id,name,address,sort_order,folders!inner(category,mmdd,label,brand_id),photos(storage_path,sort_order)")
-      .eq("folders.brand_id", Number(brandId))
+    const bid = Number(brandId);
+
+    // round / shoot_date 컬럼 마이그레이션 전이어도 죽지 않도록 구버전 select로 한 번 더 시도
+    const query = (withNew: boolean) =>
+      supabase!
+        .from("locations")
+        .select(
+          `id,name,address,sort_order${withNew ? ",shoot_date" : ""},` +
+            `folders!inner(category,folder_name,mmdd,label,brand_id${withNew ? ",round" : ""}),` +
+            `photos(storage_path,sort_order)`
+        )
+        .eq("folders.brand_id", bid)
+        .order("sort_order", { ascending: true });
+
+    let res: any = await query(true);
+    if (res.error) res = await query(false);
+    const rows: any[] = res.data ?? [];
+    if (res.error || rows.length === 0) return SAMPLE_RESULT;
+
+    const { data: cats } = await supabase
+      .from("categories")
+      .select("slug,name,sort_order")
+      .eq("brand_id", bid)
       .order("sort_order", { ascending: true });
 
-    if (error || !data || data.length === 0) return SAMPLE_LOCATIONS;
-
-    const latestByCategory = new Map<LocationCategory, string>();
-    data.forEach((row: any) => {
-      const cat = row.folders.category as LocationCategory;
-      const mmdd = row.folders.mmdd as string;
-      if (!latestByCategory.has(cat) || mmdd > latestByCategory.get(cat)!) latestByCategory.set(cat, mmdd);
+    const list: { slug: string; name: string }[] = (cats ?? []).map((c: any) => ({ slug: c.slug, name: c.name }));
+    rows.forEach((row) => {
+      const slug = row.folders.category as string;
+      if (!list.some((c) => c.slug === slug)) list.push({ slug, name: slug });
     });
+    const spaces = buildSpaces(list);
 
-    return data.map((row: any): LocationEntry => {
-      const cat = row.folders.category as LocationCategory;
-      const mmdd = row.folders.mmdd as string;
-      const dateLabel = mmdd.length === 4 ? `${mmdd.slice(0, 2)}/${mmdd.slice(2, 4)}` : mmdd;
+    const raw: RawLocation[] = rows.map((row) => {
+      const f = row.folders;
+      const round: number | null =
+        f.round ?? parseRound(f.label ?? "")?.round ?? parseRound(f.folder_name ?? "")?.round ?? null;
       const photoRows = [...(row.photos ?? [])].sort((a: any, b: any) => a.sort_order - b.sort_order);
-      const photos = photoRows.length > 0 ? photoRows.map((p: any) => locationPhotoUrl(p.storage_path)) : samplePhotos(row.name);
       return {
+        category: f.category,
+        round,
+        mmdd: f.mmdd ?? "",
+        shootDate: row.shoot_date ?? null,
+        folderLabel: f.label ?? f.folder_name ?? "",
         name: row.name,
-        address: row.address,
-        category: cat,
-        label: row.folders.label,
-        dateLabel,
-        isLatest: mmdd === latestByCategory.get(cat),
-        photos,
+        address: row.address ?? "",
+        photos: photoRows.slice(0, 2).map((p: any) => locationPhotoUrl(p.storage_path)),
       };
     });
+
+    return { spaces, locations: buildLocations(raw, spaces) };
   } catch {
-    return SAMPLE_LOCATIONS;
+    return SAMPLE_RESULT;
   }
 }
 
@@ -155,7 +181,7 @@ declare global {
 type MarkerEntry = {
   marker: any;
   overlay: any;
-  category: LocationCategory;
+  category: string;
   map: any;
 };
 
@@ -181,21 +207,26 @@ function loadKakaoSdk(): Promise<void> {
   });
 }
 
-// 카테고리 색상 핀. 같은 공간 안에서 가장 최근 폴더의 핀은 조금 더 크고 은은한 글로우로 강조.
-function pinImageSrc(color: string, isLatest: boolean) {
+// 공간 색상 핀 + 핀 속 회차 숫자. 같은 공간 안에서 가장 최근 회차의 핀은 조금 더 크고 은은한 글로우로 강조.
+function pinImageSrc(color: string, isLatest: boolean, round: number | null) {
   const glow = isLatest ? `<circle cx="14" cy="14" r="13" fill="${color}" opacity="0.22"/>` : "";
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 38">${glow}<path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 24 14 24s14-13.5 14-24C28 6.3 21.7 0 14 0z" fill="${color}"/><circle cx="14" cy="14" r="5.5" fill="white"/></svg>`;
+  const inner =
+    round != null
+      ? `<circle cx="14" cy="14" r="8.5" fill="white"/><text x="14" y="${round >= 10 ? 17.2 : 18}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${round >= 10 ? 9 : 11}" font-weight="700" fill="${color}">${round}</text>`
+      : `<circle cx="14" cy="14" r="5.5" fill="white"/>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 38">${glow}<path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 24 14 24s14-13.5 14-24C28 6.3 21.7 0 14 0z" fill="${color}"/>${inner}</svg>`;
   return `data:image/svg+xml;base64,${btoa(svg)}`;
 }
 
 // 마우스오버 시 뜨는 장소명 + 폴더 라벨 말풍선 HTML — 폴더명에 적은 라벨을 그대로 보여줌
 function tooltipHtml(loc: LocationEntry) {
-  return `<div style="transform:translateY(-6px);padding:4px 9px;border-radius:8px;background:rgba(0,0,0,0.85);color:#deff9a;font-size:11px;white-space:nowrap;font-family:inherit;border:1px solid rgba(222,255,154,0.3);">${loc.name} · ${loc.label} (${loc.dateLabel})</div>`;
+  return `<div style="transform:translateY(-6px);padding:4px 9px;border-radius:8px;background:rgba(0,0,0,0.85);color:#deff9a;font-size:11px;white-space:nowrap;font-family:inherit;border:1px solid rgba(222,255,154,0.3);">${loc.name} · ${loc.label}${loc.dateLabel ? ` (${loc.dateLabel})` : ""}</div>`;
 }
 
 function renderMarkers(
   map: any,
   locations: LocationEntry[],
+  colorOf: (slug: string) => string,
   onDone?: (entries: MarkerEntry[]) => void,
   onSelect?: (loc: LocationEntry | null) => void
 ) {
@@ -209,6 +240,11 @@ function renderMarkers(
   // 빈 지도 영역을 클릭하면 선택 해제 (사진 패널 닫기)
   if (onSelect) kakao.maps.event.addListener(map, "click", () => onSelect(null));
 
+  if (locations.length === 0) {
+    onDone?.([]);
+    return;
+  }
+
   locations.forEach((loc) => {
     geocoder.addressSearch(loc.address, (result: any[], resultStatus: string) => {
       done += 1;
@@ -217,7 +253,7 @@ function renderMarkers(
         const size = loc.isLatest ? 34 : 26;
         const height = loc.isLatest ? 46 : 35;
         const markerImage = new kakao.maps.MarkerImage(
-          pinImageSrc(CATEGORY_COLORS[loc.category], loc.isLatest),
+          pinImageSrc(colorOf(loc.category), loc.isLatest, loc.round),
           new kakao.maps.Size(size, height),
           { offset: new kakao.maps.Point(size / 2, height) }
         );
@@ -248,32 +284,31 @@ function renderMarkers(
 }
 
 function CategoryToggleLegend({
+  spaces,
   active,
   onToggle,
   showLabel = false,
 }: {
-  active: Set<LocationCategory>;
-  onToggle: (cat: LocationCategory) => void;
+  spaces: Space[];
+  active: Set<string>;
+  onToggle: (slug: string) => void;
   showLabel?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1.5 backdrop-blur">
-      {ALL_CATEGORIES.map((cat) => {
-        const isActive = active.has(cat);
+    <div className="flex max-w-[60vw] flex-wrap items-center justify-end gap-1.5 rounded-md bg-black/70 px-2 py-1.5 backdrop-blur">
+      {spaces.map((sp) => {
+        const isActive = active.has(sp.slug);
         return (
           <button
-            key={cat}
-            onClick={() => onToggle(cat)}
-            title={`${CATEGORY_LABELS[cat]} 핀 ${isActive ? "숨기기" : "보이기"}`}
+            key={sp.slug}
+            onClick={() => onToggle(sp.slug)}
+            title={`${sp.name} 핀 ${isActive ? "숨기기" : "보이기"}`}
             className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] tracking-wide transition-all ${
               isActive ? "opacity-100" : "opacity-30"
             }`}
           >
-            <span
-              className="h-2.5 w-2.5 rounded-full ring-1 ring-white/30"
-              style={{ backgroundColor: CATEGORY_COLORS[cat] }}
-            />
-            {showLabel && <span className="text-white/70">{CATEGORY_LABELS[cat]}</span>}
+            <span className="h-2.5 w-2.5 rounded-full ring-1 ring-white/30" style={{ backgroundColor: sp.color }} />
+            {showLabel && <span className="text-white/70">{sp.name}</span>}
           </button>
         );
       })}
@@ -301,7 +336,8 @@ function PhotoPreviewPanel({
         <div className="min-w-0">
           <p className="truncate text-[11px] font-medium text-white">{loc.name}</p>
           <p className="truncate text-[9px] tracking-wide text-[#deff9a]/70">
-            {loc.label} · {loc.dateLabel}
+            {loc.label}
+            {loc.dateLabel ? ` · ${loc.dateLabel}` : ""}
           </p>
         </div>
         <button
@@ -334,16 +370,17 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
   const modalEntriesRef = useRef<MarkerEntry[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [expanded, setExpanded] = useState(false);
-  const [active, setActive] = useState<Set<LocationCategory>>(new Set(ALL_CATEGORIES));
+  const [active, setActive] = useState<Set<string>>(new Set(SAMPLE_SPACES.map((s) => s.slug)));
   const [selected, setSelected] = useState<LocationEntry | null>(null);
   const [locations, setLocations] = useState<LocationEntry[]>(SAMPLE_LOCATIONS);
+  const [spaces, setSpaces] = useState<Space[]>(SAMPLE_SPACES);
 
   function openExpanded(open: boolean) {
     setSelected(null);
     setExpanded(open);
   }
 
-  function toggleCategory(cat: LocationCategory) {
+  function toggleCategory(cat: string) {
     setActive((prev) => {
       const next = new Set(prev);
       if (next.has(cat)) next.delete(cat);
@@ -365,8 +402,11 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
   useEffect(() => {
     let cancelled = false;
     Promise.all([loadKakaoSdk(), fetchLocations(brandId)])
-      .then(([, locs]) => {
+      .then(([, loaded]) => {
         if (cancelled || !mapRef.current) return;
+        const { spaces: sp, locations: locs } = loaded;
+        setSpaces(sp);
+        setActive(new Set(sp.map((s) => s.slug)));
         setLocations(locs);
         const { kakao } = window;
         const map = new kakao.maps.Map(mapRef.current, {
@@ -376,6 +416,7 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
         renderMarkers(
           map,
           locs,
+          makeColorOf(sp),
           (entries) => {
             if (cancelled) return;
             compactEntriesRef.current = entries;
@@ -405,6 +446,7 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
       renderMarkers(
         map,
         locations,
+        makeColorOf(spaces),
         (entries) => {
           if (cancelled) return;
           modalEntriesRef.current = entries;
@@ -448,7 +490,7 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
         </div>
         {status === "ready" && (
           <div className="absolute right-3 top-3 z-20 flex flex-col items-end gap-1.5">
-            <CategoryToggleLegend active={active} onToggle={toggleCategory} />
+            <CategoryToggleLegend spaces={spaces} active={active} onToggle={toggleCategory} />
             <button
               onClick={() => openExpanded(true)}
               className="flex items-center gap-1 rounded-md bg-[#deff9a] px-2.5 py-1.5 text-[10px] font-medium tracking-widest text-black shadow-lg shadow-black/40 transition-transform active:scale-95 hover:bg-[#deff9a]/90"
@@ -473,10 +515,10 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
           >
             <div ref={modalMapRef} className="h-full w-full" />
             <div className="absolute left-4 top-4 z-20">
-              <CategoryToggleLegend active={active} onToggle={toggleCategory} showLabel />
+              <CategoryToggleLegend spaces={spaces} active={active} onToggle={toggleCategory} showLabel />
             </div>
             <div className="pointer-events-none absolute bottom-4 left-4 z-20 rounded-md bg-black/70 px-3 py-1.5 text-[9px] tracking-widest text-white/50 backdrop-blur">
-              핀을 클릭하면 사진이 보여요 · 마우스오버는 폴더 라벨 · 크고 밝은 핀 = 가장 최근 폴더
+              핀을 클릭하면 사진이 보여요 · 핀 속 숫자 = 회차 · 크고 밝은 핀 = 공간별 가장 최근 회차
             </div>
             {selected && <PhotoPreviewPanel loc={selected} onClose={() => setSelected(null)} />}
             <button

@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
-import { Building2, Plus, Trash2, Pencil, Check, X, Loader2, Eye, EyeOff } from "lucide-react";
+import { Plus, Trash2, Pencil, Loader2, Eye, EyeOff } from "lucide-react";
 import PasswordGate from "../components/PasswordGate";
 import { supabase } from "../../lib/supabaseClient";
 import { ADMIN_TOKEN } from "../../lib/adminToken";
 
-type BrandRow = { id: number; name: string; access_code: string };
+type BrandRow = { id: number; name: string; code: string | null; access_code: string };
 
 async function adminFetch(url: string, init?: RequestInit) {
   const res = await fetch(url, {
@@ -18,6 +18,27 @@ async function adminFetch(url: string, init?: RequestInit) {
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json?.error ?? `요청 실패 (${res.status})`);
   return json;
+}
+
+// 업로드 없이도 프로덕션마다 통일감 있는 "이미지처럼 보이는" 뱃지를 이름에서 자동 생성
+const BADGE_COLORS = ["#deff9a", "#a2d2ff", "#ffb4a2", "#ffd6a5", "#cdb4db", "#bde0fe", "#caffbf", "#fdffb6"];
+
+function badgeColor(seed: string) {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  return BADGE_COLORS[hash % BADGE_COLORS.length];
+}
+
+function badgeText(name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) return "?";
+  const first = trimmed[0];
+  if (/[a-zA-Z]/.test(first)) {
+    const words = trimmed.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+    return trimmed.slice(0, 2).toUpperCase();
+  }
+  return first;
 }
 
 export default function AdminHomePage() {
@@ -45,7 +66,10 @@ function AdminHomeContent() {
       return;
     }
     setLoading(true);
-    const { data } = await supabase.from("brands").select("id,name,access_code").order("id", { ascending: true });
+    const { data } = await supabase
+      .from("brands")
+      .select("id,name,code,access_code")
+      .order("id", { ascending: true });
     setBrands(data ?? []);
     setLoading(false);
   }, []);
@@ -58,6 +82,7 @@ function AdminHomeContent() {
   const [newOpen, setNewOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newCode, setNewCode] = useState("");
+  const [newAccessCode, setNewAccessCode] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function createBrand() {
@@ -67,10 +92,11 @@ function AdminHomeContent() {
       await adminFetch("/api/admin/brands", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName.trim(), access_code: newCode.trim() }),
+        body: JSON.stringify({ name: newName.trim(), code: newCode.trim(), access_code: newAccessCode.trim() }),
       });
       setNewName("");
       setNewCode("");
+      setNewAccessCode("");
       setNewOpen(false);
       await loadBrands();
       notify("프로덕션을 만들었어요");
@@ -92,15 +118,17 @@ function AdminHomeContent() {
     }
   }
 
-  // ── 이름/비밀번호 수정 ──
+  // ── 이름/코드/비밀번호 수정 ──
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [editCode, setEditCode] = useState("");
+  const [editAccessCode, setEditAccessCode] = useState("");
 
   function startEdit(brand: BrandRow) {
     setEditingId(brand.id);
     setEditName(brand.name);
-    setEditCode(brand.access_code);
+    setEditCode(brand.code ?? "");
+    setEditAccessCode(brand.access_code);
   }
 
   async function saveEdit() {
@@ -109,7 +137,7 @@ function AdminHomeContent() {
       await adminFetch(`/api/admin/brands/${editingId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: editName.trim(), access_code: editCode.trim() }),
+        body: JSON.stringify({ name: editName.trim(), code: editCode.trim(), access_code: editAccessCode.trim() }),
       });
       setEditingId(null);
       await loadBrands();
@@ -138,6 +166,7 @@ function AdminHomeContent() {
         <div className="relative z-10 mx-auto grid max-w-5xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {brands.map((brand) => {
             const isEditing = editingId === brand.id;
+            const subtitle = brand.code?.trim() || "프로젝트 명";
             return (
               <div
                 key={brand.id}
@@ -154,6 +183,12 @@ function AdminHomeContent() {
                     <input
                       value={editCode}
                       onChange={(e) => setEditCode(e.target.value)}
+                      placeholder="프로젝트명"
+                      className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
+                    />
+                    <input
+                      value={editAccessCode}
+                      onChange={(e) => setEditAccessCode(e.target.value)}
                       placeholder="접속 비밀번호"
                       className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
                     />
@@ -175,13 +210,14 @@ function AdminHomeContent() {
                 ) : (
                   <>
                     <Link href={`/admin/${brand.id}`} className="block">
-                      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] text-white/30 transition-colors group-hover:border-[#deff9a]/30 group-hover:text-[#deff9a]">
-                        <Building2 size={18} strokeWidth={1.5} />
+                      <div
+                        className="mb-3 flex h-14 w-14 items-center justify-center rounded-xl text-base font-semibold text-black"
+                        style={{ backgroundColor: badgeColor(String(brand.id) + brand.name) }}
+                      >
+                        {badgeText(brand.name)}
                       </div>
                       <div className="text-sm font-light text-white">{brand.name}</div>
-                      <div className="mt-0.5 text-[10px] tracking-widest text-white/25">
-                        BRAND {String(brand.id).padStart(2, "0")}
-                      </div>
+                      <div className="mt-0.5 text-[10px] tracking-widest text-white/25">{subtitle}</div>
                       <div className="mt-2 flex items-center gap-1.5 text-[11px] text-white/30">
                         접속코드:{" "}
                         <span className="font-mono text-white/50">
@@ -203,7 +239,7 @@ function AdminHomeContent() {
                       <button
                         onClick={() => startEdit(brand)}
                         className="text-white/25 hover:text-white"
-                        title="이름/비밀번호 수정"
+                        title="이름/코드/비밀번호 수정"
                       >
                         <Pencil size={13} />
                       </button>
@@ -226,13 +262,19 @@ function AdminHomeContent() {
               <input
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="프로덕션 이름 (예: 브랜드 04)"
+                placeholder="프로덕션 이름 (영문/한글 모두 가능)"
                 autoFocus
                 className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
               />
               <input
                 value={newCode}
                 onChange={(e) => setNewCode(e.target.value)}
+                placeholder="프로젝트명"
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
+              />
+              <input
+                value={newAccessCode}
+                onChange={(e) => setNewAccessCode(e.target.value)}
                 placeholder="접속 비밀번호 (비우면 1234)"
                 className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
               />

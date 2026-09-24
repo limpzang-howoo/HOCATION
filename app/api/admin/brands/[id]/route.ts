@@ -13,9 +13,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (!supabaseAdmin) return NextResponse.json({ error: "admin client not configured" }, { status: 500 });
 
   const body = await req.json();
-  const update: Record<string, string> = {};
+  const update: Record<string, string | null> = {};
   if (typeof body?.name === "string" && body.name.trim()) update.name = body.name.trim();
   if (typeof body?.access_code === "string" && body.access_code.trim()) update.access_code = body.access_code.trim();
+  if (typeof body?.code === "string") update.code = body.code.trim() ? body.code.trim() : null;
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
   }

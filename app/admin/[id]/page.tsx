@@ -14,6 +14,7 @@ import {
   Upload,
   Loader2,
   ImageOff,
+  MapPin,
 } from "lucide-react";
 import PasswordGate from "../../components/PasswordGate";
 import { supabase, locationPhotoUrl } from "../../../lib/supabaseClient";
@@ -181,17 +182,24 @@ function AdminContent({ brandId }: { brandId: string }) {
     setPhotosLoading(false);
   }, []);
 
-  // 폴더 하나당 사진을 걸어둘 "장소"를 화면에 노출하지 않고 자동으로 마련해줌
-  async function ensureLocation(folder: FolderRow): Promise<string | null> {
+  // 폴더 하나당 사진을 걸어둘 "장소"를 화면에 노출하지 않고 자동으로 마련해줌.
+  // 이 장소의 주소가 곧 지도 핀 위치라, 폴더 열 때 주소도 같이 불러온다.
+  const [folderAddress, setFolderAddress] = useState("");
+
+  async function ensureLocation(folder: FolderRow, initialAddress?: string): Promise<string | null> {
     if (!supabase) return null;
-    const { data } = await supabase.from("locations").select("id").eq("folder_id", folder.id).limit(1);
-    if (data && data.length > 0) return data[0].id;
+    const { data } = await supabase.from("locations").select("id,address").eq("folder_id", folder.id).limit(1);
+    if (data && data.length > 0) {
+      setFolderAddress(data[0].address ?? "");
+      return data[0].id;
+    }
     try {
       const res = await adminFetch("/api/admin/locations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder_id: folder.id, name: folder.label, address: "" }),
+        body: JSON.stringify({ folder_id: folder.id, name: folder.label, address: initialAddress ?? "" }),
       });
+      setFolderAddress(initialAddress ?? "");
       return res.location?.id ?? null;
     } catch (e: any) {
       notify(e.message ?? "장소 준비 실패");
@@ -199,20 +207,42 @@ function AdminContent({ brandId }: { brandId: string }) {
     }
   }
 
-  async function openFolder(folder: FolderRow) {
+  async function openFolder(folder: FolderRow, initialAddress?: string) {
     setSelectedFolder(folder);
     setPhotos([]);
+    setFolderAddress("");
     setPhotosLoading(true);
-    const locId = await ensureLocation(folder);
+    const locId = await ensureLocation(folder, initialAddress);
     setLocationId(locId);
     if (locId) await loadPhotos(locId);
     setPhotosLoading(false);
+  }
+
+  // 주소(지도 핀 위치) 수정
+  const [editingAddress, setEditingAddress] = useState(false);
+  const [addressDraft, setAddressDraft] = useState("");
+
+  async function saveAddress() {
+    if (!locationId) return;
+    try {
+      await adminFetch(`/api/admin/locations/${locationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address: addressDraft.trim() }),
+      });
+      setFolderAddress(addressDraft.trim());
+      setEditingAddress(false);
+      notify("주소를 저장했어요 — 지도에 반영돼요");
+    } catch (e: any) {
+      notify(e.message ?? "주소 저장 실패");
+    }
   }
 
   // ── 새 폴더 ──
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newMmdd, setNewMmdd] = useState("");
   const [newLabel, setNewLabel] = useState("");
+  const [newAddress, setNewAddress] = useState("");
   const [savingFolder, setSavingFolder] = useState(false);
 
   async function createFolder() {
@@ -229,12 +259,14 @@ function AdminContent({ brandId }: { brandId: string }) {
           label: newLabel.trim(),
         }),
       });
+      const address = newAddress.trim();
       setNewMmdd("");
       setNewLabel("");
+      setNewAddress("");
       setNewFolderOpen(false);
       await loadFolders();
       notify("폴더를 만들었어요 — 바로 사진을 올려보세요");
-      if (res.folder) await openFolder(res.folder);
+      if (res.folder) await openFolder(res.folder, address);
     } catch (e: any) {
       notify(e.message ?? "폴더 생성 실패");
     } finally {
@@ -472,6 +504,12 @@ function AdminContent({ brandId }: { brandId: string }) {
                     placeholder="라벨 (예: 최종제안)"
                     className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
                   />
+                  <input
+                    value={newAddress}
+                    onChange={(e) => setNewAddress(e.target.value)}
+                    placeholder="주소 (지도에 핀 찍을 위치, 선택)"
+                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
+                  />
                   <div className="flex gap-2">
                     <button
                       onClick={createFolder}
@@ -500,7 +538,44 @@ function AdminContent({ brandId }: { brandId: string }) {
           {!selectedFolder ? (
             <EmptyHint text="폴더를 클릭하면 바로 사진을 올릴 수 있어요" />
           ) : (
-            <div
+            <>
+              <div className="mb-3 flex items-center gap-1.5 text-[11px] text-white/30">
+                <MapPin size={12} className="shrink-0 text-white/20" />
+                {editingAddress ? (
+                  <>
+                    <input
+                      value={addressDraft}
+                      onChange={(e) => setAddressDraft(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && saveAddress()}
+                      placeholder="지도에 표시할 주소"
+                      autoFocus
+                      className="flex-1 rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-[11px] text-white outline-none focus:border-[#deff9a]/40"
+                    />
+                    <button onClick={saveAddress} className="text-[#deff9a]">
+                      <Check size={12} />
+                    </button>
+                    <button onClick={() => setEditingAddress(false)} className="text-white/40 hover:text-white">
+                      <X size={12} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className={folderAddress ? "text-white/50" : "text-white/20"}>
+                      {folderAddress || "주소 없음 — 지도에 핀이 표시되지 않아요"}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setAddressDraft(folderAddress);
+                        setEditingAddress(true);
+                      }}
+                      className="text-white/20 hover:text-white"
+                    >
+                      <Pencil size={11} />
+                    </button>
+                  </>
+                )}
+              </div>
+              <div
               onDragOver={(e) => {
                 e.preventDefault();
                 setDragOver(true);
@@ -591,6 +666,7 @@ function AdminContent({ brandId }: { brandId: string }) {
                 }}
               />
             </div>
+            </>
           )}
         </Panel>
       </div>
