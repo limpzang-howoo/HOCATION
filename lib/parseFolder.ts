@@ -9,6 +9,11 @@ export function parseRound(name: string): { space: string; round: number } | nul
 
 // 로케이션 폴더: "YYYYMMDD-장소명-주소"
 // 앞 하이픈 2개까지만 분리 → 주소 안의 하이픈(277-5)은 그대로 유지. 장소명에는 하이픈 금지.
+// 폴더 행의 회차 번호를 구한다 — round 컬럼이 있으면 그대로, 없으면(구DB) label에서 파싱.
+export function folderRound(f: { round?: number | null; label: string }): number | null {
+  return f.round ?? parseRound(f.label)?.round ?? null;
+}
+
 export function parseLocation(name: string): { date: string; place: string; address: string } | null {
   const m = name.trim().match(/^(\d{8})-([^-]+)-(.+)$/);
   if (!m) return null;

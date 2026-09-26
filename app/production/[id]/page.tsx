@@ -5,9 +5,10 @@ import { motion } from "framer-motion";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Home, Coffee, Trees, Folder } from "lucide-react";
+import { Folder } from "lucide-react";
 import PasswordGate from "../../components/PasswordGate";
 import { supabase } from "../../../lib/supabaseClient";
+import { folderRound } from "../../../lib/parseFolder";
 
 const KakaoMapWidget = dynamic(() => import("../../components/KakaoMapWidget"), {
   ssr: false,
@@ -27,10 +28,8 @@ const WeatherWidget = dynamic(() => import("../../components/WeatherWidget"), {
   ),
 });
 
-// 관리자 페이지에서 만든 카테고리는 자유 이름이라, 알려진 slug만 전용 아이콘을 쓰고 나머진 기본 폴더 아이콘
-const ICONS: Record<string, typeof Home> = { home: Home, cafe: Coffee, playground: Trees };
-
-type CategoryRow = { slug: string; name: string };
+type FolderRow = { category: string; mmdd: string; label: string; round: number | null };
+type RoundSummary = { round: number; mmdd: string; spaceCount: number };
 
 export default function ProductionPage() {
   const params = useParams();
@@ -70,18 +69,36 @@ export default function ProductionPage() {
 }
 
 function ProductionContent({ id }: { id: string }) {
-  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [rounds, setRounds] = useState<RoundSummary[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      if (!supabase) return;
+      if (!supabase) {
+        if (!cancelled) setLoading(false);
+        return;
+      }
       const { data } = await supabase
-        .from("categories")
-        .select("slug,name")
-        .eq("brand_id", Number(id))
-        .order("sort_order", { ascending: true });
-      if (!cancelled) setCategories(data ?? []);
+        .from("folders")
+        .select("category,mmdd,label,round")
+        .eq("brand_id", Number(id));
+      if (cancelled) return;
+
+      const byRound = new Map<number, { mmdd: string; spaces: Set<string> }>();
+      (data ?? []).forEach((f: FolderRow) => {
+        const r = folderRound(f);
+        if (r == null) return;
+        const cur = byRound.get(r) ?? { mmdd: f.mmdd, spaces: new Set<string>() };
+        if (f.mmdd && (!cur.mmdd || f.mmdd < cur.mmdd)) cur.mmdd = f.mmdd; // 가장 이른 날짜를 대표로
+        cur.spaces.add(f.category);
+        byRound.set(r, cur);
+      });
+      const list: RoundSummary[] = Array.from(byRound.entries())
+        .map(([round, v]) => ({ round, mmdd: v.mmdd, spaceCount: v.spaces.size }))
+        .sort((a, b) => b.round - a.round);
+      setRounds(list);
+      setLoading(false);
     }
     load();
     return () => {
@@ -114,30 +131,36 @@ function ProductionContent({ id }: { id: string }) {
         BRAND <span className="text-[#deff9a]">{String(id).padStart(2, "0")}</span>
       </motion.h1>
 
-      {/* Mac Finder 스타일 공간 폴더 — 관리자 페이지에서 만든 카테고리 */}
-      <div className="relative z-10 mx-auto grid max-w-3xl grid-cols-1 gap-6 sm:grid-cols-3">
-        {categories.map((cat, idx) => {
-          const Icon = ICONS[cat.slug] ?? Folder;
-          return (
+      {/* Mac Finder 스타일 회차 폴더 — 최신 회차가 맨 앞 */}
+      {loading ? null : rounds.length === 0 ? (
+        <p className="relative z-10 py-8 text-center text-xs tracking-widest text-white/20">
+          아직 등록된 자료가 없습니다
+        </p>
+      ) : (
+        <div className="relative z-10 mx-auto grid max-w-3xl grid-cols-1 gap-6 sm:grid-cols-3">
+          {rounds.map((r, idx) => (
             <motion.div
-              key={cat.slug}
+              key={r.round}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.15 + idx * 0.08 }}
             >
               <Link
-                href={`/production/${id}/${cat.slug}`}
-                className="group flex flex-col items-center justify-center gap-4 rounded-[1.5rem] border border-white/10 bg-[#0A0A0A] px-6 py-14 text-center transition-all duration-300 hover:border-[#deff9a]/40 hover:bg-[#deff9a]/[0.04]"
+                href={`/production/${id}/${r.round}`}
+                className="group flex flex-col items-center justify-center gap-2 rounded-[1.5rem] border border-white/10 bg-[#0A0A0A] px-6 py-14 text-center transition-all duration-300 hover:border-[#deff9a]/40 hover:bg-[#deff9a]/[0.04]"
               >
-                <Icon size={32} strokeWidth={1} className="text-white/40 group-hover:text-[#deff9a] transition-colors" />
-                <span className="text-sm font-light tracking-widest text-white/70 group-hover:text-white">
-                  {cat.name}
-                </span>
+                <Folder size={32} strokeWidth={1} className="text-white/40 group-hover:text-[#deff9a] transition-colors" />
+                <span className="text-sm font-light tracking-widest text-white/70 group-hover:text-white">{r.round}차</span>
+                {r.mmdd?.length === 4 && (
+                  <span className="text-[10px] tracking-widest text-white/25">
+                    {r.mmdd.slice(0, 2)}/{r.mmdd.slice(2, 4)}
+                  </span>
+                )}
               </Link>
             </motion.div>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* 하단 HUD: 지도 / 날씨 (좌우 대칭) */}
       <div className="relative z-10 mx-auto mt-12 grid max-w-3xl grid-cols-1 gap-4 sm:grid-cols-2">

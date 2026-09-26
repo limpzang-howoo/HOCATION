@@ -6,6 +6,8 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Download, Loader2, Check, ImageOff } from "lucide-react";
 import { supabase, locationPhotoUrl } from "../../../../../lib/supabaseClient";
+import { folderRound } from "../../../../../lib/parseFolder";
+import { zipAndDownload } from "../../../../../lib/zipDownload";
 import LocationReportCard from "../../../../components/LocationReportCard";
 import { ReportData } from "../../../../../lib/reportFields";
 
@@ -20,14 +22,13 @@ type LocationGroup = {
   photos: Photo[];
 };
 
-// 라우트 파라미터명은 "location"이지만 실제로는 폴더(회차) id.
-export default function FolderDetailPage() {
+export default function RoundCategoryPage() {
   const params = useParams();
   const id = params.id as string;
+  const round = Number(params.round);
   const category = params.category as string;
-  const folderId = params.location as string;
 
-  const [folderName, setFolderName] = useState("");
+  const [categoryName, setCategoryName] = useState(category);
   const [groups, setGroups] = useState<LocationGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [state, setState] = useState<DownloadState>("idle");
@@ -36,31 +37,44 @@ export default function FolderDetailPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      if (!supabase) {
+      if (!supabase || !Number.isFinite(round)) {
         if (!cancelled) setLoading(false);
         return;
       }
-      const { data: folder } = await supabase
-        .from("folders")
-        .select("id,folder_name")
-        .eq("id", folderId)
+      const { data: cat } = await supabase
+        .from("categories")
+        .select("name")
+        .eq("brand_id", Number(id))
+        .eq("slug", category)
         .single();
-      if (cancelled) return;
-      if (folder) setFolderName(folder.folder_name);
+      if (!cancelled && cat) setCategoryName(cat.name);
 
-      // report/shoot_date 컬럼이 아직 없는 구DB에서도 죽지 않도록 구버전 select로 한 번 더 시도
+      const { data: allFolders } = await supabase
+        .from("folders")
+        .select("id,category,label,round")
+        .eq("brand_id", Number(id))
+        .eq("category", category);
+      const folderIds = (allFolders ?? []).filter((f: any) => folderRound(f) === round).map((f: any) => f.id);
+      if (cancelled) return;
+      if (folderIds.length === 0) {
+        setGroups([]);
+        setLoading(false);
+        return;
+      }
+
+      // shoot_date/report 컬럼이 아직 없는 구DB에서도 죽지 않도록 구버전 select로 한 번 더 시도
       const query = (withNew: boolean) =>
         supabase!
           .from("locations")
           .select(`id,name,address,sort_order${withNew ? ",shoot_date,report" : ""}`)
-          .eq("folder_id", folderId)
+          .in("folder_id", folderIds)
           .order("sort_order", { ascending: true });
-
       let res: any = await query(true);
       if (res.error) res = await query(false);
       const locs: any[] = res.data ?? [];
       if (cancelled) return;
       if (locs.length === 0) {
+        setGroups([]);
         setLoading(false);
         return;
       }
@@ -75,70 +89,55 @@ export default function FolderDetailPage() {
         .order("sort_order", { ascending: true });
       if (cancelled) return;
 
-      const built: LocationGroup[] = locs.map((l) => ({
-        id: l.id,
-        name: l.name,
-        address: l.address ?? null,
-        shootDate: l.shoot_date ?? null,
-        report: l.report ?? null,
-        photos: (photoRows ?? [])
-          .filter((p: any) => p.location_id === l.id)
-          .map((p: any) => ({ id: p.id, url: locationPhotoUrl(p.storage_path) })),
-      }));
-      setGroups(built);
+      setGroups(
+        locs.map((l) => ({
+          id: l.id,
+          name: l.name,
+          address: l.address ?? null,
+          shootDate: l.shoot_date ?? null,
+          report: l.report ?? null,
+          photos: (photoRows ?? [])
+            .filter((p: any) => p.location_id === l.id)
+            .map((p: any) => ({ id: p.id, url: locationPhotoUrl(p.storage_path) })),
+        }))
+      );
       setLoading(false);
     }
     load();
     return () => {
       cancelled = true;
     };
-  }, [folderId]);
+  }, [id, category, round]);
 
-  const allPhotos = groups.flatMap((g) => g.photos);
+  function buildEntries(g: LocationGroup) {
+    return g.photos.map((p, i) => ({ url: p.url, name: `${g.name}_${String(i + 1).padStart(2, "0")}.jpg` }));
+  }
+  const allEntries = groups.flatMap(buildEntries);
 
-  async function zipAndDownload(photos: Photo[], filenamePrefix: string, onState: (s: DownloadState) => void) {
-    if (photos.length === 0) return;
-    onState("zipping");
+  async function handleDownloadAll() {
+    if (state === "zipping" || allEntries.length === 0) return;
+    setState("zipping");
     try {
-      const JSZip = (await import("jszip")).default;
-      const zip = new JSZip();
-
-      const results = await Promise.all(
-        photos.map(async (p, i) => {
-          const res = await fetch(p.url);
-          if (!res.ok) throw new Error("사진을 불러오지 못했습니다");
-          const blob = await res.blob();
-          return { name: `${filenamePrefix}_${String(i + 1).padStart(2, "0")}.jpg`, blob };
-        })
-      );
-      results.forEach(({ name, blob }) => zip.file(name, blob));
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${filenamePrefix}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-
-      onState("done");
-      setTimeout(() => onState("idle"), 2000);
+      await zipAndDownload(allEntries, `${categoryName || category}_${round}차`);
+      setState("done");
+      setTimeout(() => setState("idle"), 2000);
     } catch {
-      onState("error");
-      setTimeout(() => onState("idle"), 2500);
+      setState("error");
+      setTimeout(() => setState("idle"), 2500);
     }
   }
 
-  function handleDownloadAll() {
-    if (state === "zipping") return;
-    zipAndDownload(allPhotos, folderName || folderId, setState);
-  }
-
-  function handleDownloadLocation(g: LocationGroup) {
-    if (locState[g.id] === "zipping") return;
-    zipAndDownload(g.photos, g.name || g.id, (s) => setLocState((prev) => ({ ...prev, [g.id]: s })));
+  async function handleDownloadLocation(g: LocationGroup) {
+    if (locState[g.id] === "zipping" || g.photos.length === 0) return;
+    setLocState((prev) => ({ ...prev, [g.id]: "zipping" }));
+    try {
+      await zipAndDownload(buildEntries(g), g.name || g.id);
+      setLocState((prev) => ({ ...prev, [g.id]: "done" }));
+      setTimeout(() => setLocState((prev) => ({ ...prev, [g.id]: "idle" })), 2000);
+    } catch {
+      setLocState((prev) => ({ ...prev, [g.id]: "error" }));
+      setTimeout(() => setLocState((prev) => ({ ...prev, [g.id]: "idle" })), 2500);
+    }
   }
 
   return (
@@ -147,19 +146,19 @@ export default function FolderDetailPage() {
 
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="relative z-10 mx-auto max-w-5xl">
         <p className="mb-3 font-mono text-xs tracking-widest text-white/30">
-          <Link href={`/production/${id}/${category}`} className="hover:text-[#deff9a] transition-colors">
+          <Link href={`/production/${id}/${round}`} className="hover:text-[#deff9a] transition-colors">
             ← BACK
           </Link>
         </p>
 
         <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-xl font-light tracking-widest text-white">
-            {(folderName || "LOADING").toUpperCase()}
+            {categoryName.toUpperCase()} <span className="text-[#deff9a]">· {round}차</span>
           </h1>
 
           <button
             onClick={handleDownloadAll}
-            disabled={state === "zipping" || allPhotos.length === 0}
+            disabled={state === "zipping" || allEntries.length === 0}
             className="flex items-center gap-2 rounded-md bg-[#deff9a] px-4 py-2 text-xs font-medium tracking-widest text-black shadow-lg shadow-black/40 transition-all hover:bg-[#deff9a]/90 disabled:cursor-not-allowed disabled:opacity-70"
           >
             {state === "zipping" && <Loader2 size={14} className="animate-spin" />}
@@ -168,7 +167,7 @@ export default function FolderDetailPage() {
             {state === "zipping" && "압축 중..."}
             {state === "done" && "다운로드 완료"}
             {state === "error" && "다시 시도"}
-            {state === "idle" && `전체 다운로드 (ZIP, ${allPhotos.length}장)`}
+            {state === "idle" && `이 공간 전체 다운로드 (ZIP, ${allEntries.length}장)`}
           </button>
         </div>
 
@@ -194,12 +193,7 @@ export default function FolderDetailPage() {
                   className="space-y-4"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <LocationReportCard
-                      name={g.name}
-                      address={g.address}
-                      shootDate={g.shootDate}
-                      report={g.report}
-                    />
+                    <LocationReportCard name={g.name} address={g.address} shootDate={g.shootDate} report={g.report} />
                     <button
                       onClick={() => handleDownloadLocation(g)}
                       disabled={gState === "zipping" || g.photos.length === 0}
@@ -220,10 +214,7 @@ export default function FolderDetailPage() {
                   ) : (
                     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                       {g.photos.map((p, i) => (
-                        <div
-                          key={p.id}
-                          className="aspect-[4/3] overflow-hidden rounded-xl border border-white/10 bg-[#0A0A0A]"
-                        >
+                        <div key={p.id} className="aspect-[4/3] overflow-hidden rounded-xl border border-white/10 bg-[#0A0A0A]">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={p.url} alt={`${g.name} 사진 ${i + 1}`} loading="lazy" className="h-full w-full object-cover" />
                         </div>

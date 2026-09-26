@@ -17,11 +17,15 @@ import {
   MapPin,
 } from "lucide-react";
 import PasswordGate from "../../components/PasswordGate";
+import LocationReportCard from "../../components/LocationReportCard";
 import { supabase, locationPhotoUrl } from "../../../lib/supabaseClient";
 import { ADMIN_TOKEN } from "../../../lib/adminToken";
+import { parseLocation } from "../../../lib/parseFolder";
+import { REPORT_FIELDS, ReportData } from "../../../lib/reportFields";
 
 type CategoryRow = { id: string; slug: string; name: string; sort_order: number };
-type FolderRow = { id: string; category: string; folder_name: string; mmdd: string; label: string };
+type FolderRow = { id: string; category: string; folder_name: string; mmdd: string; label: string; round: number | null };
+type LocationRow = { id: string; name: string; address: string; shoot_date: string | null; report: ReportData | null };
 type PhotoRow = { id: string; storage_path: string; sort_order: number };
 
 async function adminFetch(url: string, init?: RequestInit) {
@@ -52,7 +56,7 @@ function AdminContent({ brandId }: { brandId: string }) {
     setTimeout(() => setToast(null), 3000);
   }
 
-  // ── 카테고리 ──
+  // ── 카테고리(공간) ──
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<CategoryRow | null>(null);
@@ -128,7 +132,7 @@ function AdminContent({ brandId }: { brandId: string }) {
   }
 
   async function deleteCategory(cat: CategoryRow) {
-    if (!confirm(`"${cat.name}" 카테고리를 삭제할까요?\n안의 폴더와 사진이 모두 함께 삭제됩니다.`)) return;
+    if (!confirm(`"${cat.name}" 카테고리를 삭제할까요?\n안의 폴더·장소·사진이 모두 함께 삭제됩니다.`)) return;
     try {
       await adminFetch(`/api/admin/categories/${cat.id}`, { method: "DELETE" });
       if (selectedCategory?.id === cat.id) setSelectedCategory(null);
@@ -139,13 +143,10 @@ function AdminContent({ brandId }: { brandId: string }) {
     }
   }
 
-  // ── 폴더 ──
+  // ── 폴더(회차) ──
   const [folders, setFolders] = useState<FolderRow[]>([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<FolderRow | null>(null);
-  const [locationId, setLocationId] = useState<string | null>(null);
-  const [photos, setPhotos] = useState<PhotoRow[]>([]);
-  const [photosLoading, setPhotosLoading] = useState(false);
 
   const loadFolders = useCallback(async () => {
     if (!supabase || !selectedCategory) {
@@ -155,7 +156,7 @@ function AdminContent({ brandId }: { brandId: string }) {
     setFoldersLoading(true);
     const { data } = await supabase
       .from("folders")
-      .select("id,category,folder_name,mmdd,label")
+      .select("id,category,folder_name,mmdd,label,round")
       .eq("brand_id", Number(brandId))
       .eq("category", selectedCategory.slug)
       .order("mmdd", { ascending: false });
@@ -163,9 +164,29 @@ function AdminContent({ brandId }: { brandId: string }) {
     setFoldersLoading(false);
   }, [brandId, selectedCategory]);
 
+  // ── 장소(로케이션) — 폴더 하나 안에 여러 개 있을 수 있음 ──
+  const [locations, setLocations] = useState<LocationRow[]>([]);
+  const [locationsLoading, setLocationsLoading] = useState(false);
+  const [selectedLocation, setSelectedLocation] = useState<LocationRow | null>(null);
+  const [photos, setPhotos] = useState<PhotoRow[]>([]);
+  const [photosLoading, setPhotosLoading] = useState(false);
+
+  const loadLocations = useCallback(async (folderId: string) => {
+    if (!supabase) return;
+    setLocationsLoading(true);
+    const { data } = await supabase
+      .from("locations")
+      .select("id,name,address,shoot_date,report,sort_order")
+      .eq("folder_id", folderId)
+      .order("sort_order", { ascending: true });
+    setLocations(data ?? []);
+    setLocationsLoading(false);
+  }, []);
+
   useEffect(() => {
     setSelectedFolder(null);
-    setLocationId(null);
+    setSelectedLocation(null);
+    setLocations([]);
     setPhotos([]);
     loadFolders();
   }, [loadFolders]);
@@ -182,55 +203,36 @@ function AdminContent({ brandId }: { brandId: string }) {
     setPhotosLoading(false);
   }, []);
 
-  // 폴더 하나당 사진을 걸어둘 "장소"를 화면에 노출하지 않고 자동으로 마련해줌.
-  // 이 장소의 주소가 곧 지도 핀 위치라, 폴더 열 때 주소도 같이 불러온다.
-  const [folderAddress, setFolderAddress] = useState("");
-
-  async function ensureLocation(folder: FolderRow, initialAddress?: string): Promise<string | null> {
-    if (!supabase) return null;
-    const { data } = await supabase.from("locations").select("id,address").eq("folder_id", folder.id).limit(1);
-    if (data && data.length > 0) {
-      setFolderAddress(data[0].address ?? "");
-      return data[0].id;
-    }
-    try {
-      const res = await adminFetch("/api/admin/locations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder_id: folder.id, name: folder.label, address: initialAddress ?? "" }),
-      });
-      setFolderAddress(initialAddress ?? "");
-      return res.location?.id ?? null;
-    } catch (e: any) {
-      notify(e.message ?? "장소 준비 실패");
-      return null;
-    }
+  function openFolder(folder: FolderRow) {
+    setSelectedFolder(folder);
+    setSelectedLocation(null);
+    setPhotos([]);
+    setLocations([]);
+    loadLocations(folder.id);
   }
 
-  async function openFolder(folder: FolderRow, initialAddress?: string) {
-    setSelectedFolder(folder);
-    setPhotos([]);
-    setFolderAddress("");
+  async function openLocation(loc: LocationRow) {
+    setSelectedLocation(loc);
+    setReportDraft(loc.report ?? {});
+    setEditingAddress(false);
     setPhotosLoading(true);
-    const locId = await ensureLocation(folder, initialAddress);
-    setLocationId(locId);
-    if (locId) await loadPhotos(locId);
+    await loadPhotos(loc.id);
     setPhotosLoading(false);
   }
 
-  // 주소(지도 핀 위치) 수정
+  // 주소(지도 핀 위치) 수정 — 이제 장소 단위
   const [editingAddress, setEditingAddress] = useState(false);
   const [addressDraft, setAddressDraft] = useState("");
 
   async function saveAddress() {
-    if (!locationId) return;
+    if (!selectedLocation) return;
     try {
-      await adminFetch(`/api/admin/locations/${locationId}`, {
+      await adminFetch(`/api/admin/locations/${selectedLocation.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ address: addressDraft.trim() }),
       });
-      setFolderAddress(addressDraft.trim());
+      setSelectedLocation((prev) => (prev ? { ...prev, address: addressDraft.trim() } : prev));
       setEditingAddress(false);
       notify("주소를 저장했어요 — 지도에 반영돼요");
     } catch (e: any) {
@@ -238,11 +240,32 @@ function AdminContent({ brandId }: { brandId: string }) {
     }
   }
 
-  // ── 새 폴더 ──
+  // ── 현장 리포트(한 장 요약) ──
+  const [reportDraft, setReportDraft] = useState<ReportData>({});
+  const [savingReport, setSavingReport] = useState(false);
+
+  async function saveReport() {
+    if (!selectedLocation) return;
+    setSavingReport(true);
+    try {
+      await adminFetch(`/api/admin/locations/${selectedLocation.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ report: reportDraft }),
+      });
+      setSelectedLocation((prev) => (prev ? { ...prev, report: reportDraft } : prev));
+      notify("리포트를 저장했어요");
+    } catch (e: any) {
+      notify(e.message ?? "리포트 저장 실패");
+    } finally {
+      setSavingReport(false);
+    }
+  }
+
+  // ── 새 폴더(회차) ──
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newMmdd, setNewMmdd] = useState("");
   const [newLabel, setNewLabel] = useState("");
-  const [newAddress, setNewAddress] = useState("");
   const [savingFolder, setSavingFolder] = useState(false);
 
   async function createFolder() {
@@ -259,14 +282,12 @@ function AdminContent({ brandId }: { brandId: string }) {
           label: newLabel.trim(),
         }),
       });
-      const address = newAddress.trim();
       setNewMmdd("");
       setNewLabel("");
-      setNewAddress("");
       setNewFolderOpen(false);
       await loadFolders();
-      notify("폴더를 만들었어요 — 바로 사진을 올려보세요");
-      if (res.folder) await openFolder(res.folder, address);
+      notify("폴더를 만들었어요 — 이제 안에 장소를 추가하세요");
+      if (res.folder) openFolder(res.folder);
     } catch (e: any) {
       notify(e.message ?? "폴더 생성 실패");
     } finally {
@@ -275,12 +296,13 @@ function AdminContent({ brandId }: { brandId: string }) {
   }
 
   async function deleteFolder(folder: FolderRow) {
-    if (!confirm(`"${folder.folder_name}" 폴더를 삭제할까요?\n안에 있는 사진이 모두 함께 삭제됩니다.`)) return;
+    if (!confirm(`"${folder.folder_name}" 폴더를 삭제할까요?\n안에 있는 장소와 사진이 모두 함께 삭제됩니다.`)) return;
     try {
       await adminFetch(`/api/admin/folders/${folder.id}`, { method: "DELETE" });
       if (selectedFolder?.id === folder.id) {
         setSelectedFolder(null);
-        setLocationId(null);
+        setSelectedLocation(null);
+        setLocations([]);
         setPhotos([]);
       }
       await loadFolders();
@@ -290,7 +312,127 @@ function AdminContent({ brandId }: { brandId: string }) {
     }
   }
 
-  // ── 사진 업로드/삭제 ──
+  // ── 새 장소 ──
+  const [newLocOpen, setNewLocOpen] = useState(false);
+  const [newLocRaw, setNewLocRaw] = useState("");
+  const [newLocName, setNewLocName] = useState("");
+  const [newLocAddress, setNewLocAddress] = useState("");
+  const [savingLoc, setSavingLoc] = useState(false);
+
+  function applyRawParse() {
+    const parsed = parseLocation(newLocRaw.trim());
+    if (parsed) {
+      setNewLocName(parsed.place);
+      setNewLocAddress(parsed.address);
+    }
+  }
+
+  async function createLocation() {
+    if (!selectedFolder) return;
+    const parsed = parseLocation(newLocRaw.trim());
+    const name = (parsed?.place ?? newLocName).trim();
+    const address = (parsed?.address ?? newLocAddress).trim();
+    const shoot_date = parsed?.date;
+    if (!name) return;
+    setSavingLoc(true);
+    try {
+      const res = await adminFetch("/api/admin/locations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder_id: selectedFolder.id, name, address, shoot_date }),
+      });
+      setNewLocRaw("");
+      setNewLocName("");
+      setNewLocAddress("");
+      setNewLocOpen(false);
+      await loadLocations(selectedFolder.id);
+      notify("장소를 추가했어요");
+      if (res.location) openLocation(res.location);
+    } catch (e: any) {
+      notify(e.message ?? "장소 추가 실패");
+    } finally {
+      setSavingLoc(false);
+    }
+  }
+
+  async function deleteLocation(loc: LocationRow) {
+    if (!confirm(`"${loc.name}" 장소를 삭제할까요?\n안의 사진이 모두 함께 삭제됩니다.`)) return;
+    try {
+      await adminFetch(`/api/admin/locations/${loc.id}`, { method: "DELETE" });
+      if (selectedLocation?.id === loc.id) {
+        setSelectedLocation(null);
+        setPhotos([]);
+      }
+      if (selectedFolder) await loadLocations(selectedFolder.id);
+      notify("장소를 삭제했어요");
+    } catch (e: any) {
+      notify(e.message ?? "장소 삭제 실패");
+    }
+  }
+
+  // ── 폴더째 올리기(자동 인식) — 회차 폴더를 통째로 선택하면 하위 폴더(날짜-장소명-주소)를 각각 장소로 자동 생성 ──
+  const bulkInputRef = useRef<HTMLInputElement>(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+
+  async function bulkUploadLocations(fileList: FileList) {
+    if (!selectedFolder) return;
+    const files = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
+    if (files.length === 0) {
+      notify("이미지 파일을 찾지 못했어요");
+      return;
+    }
+    const groups = new Map<string, File[]>();
+    files.forEach((f) => {
+      const rel = (f as any).webkitRelativePath || f.name;
+      const parts = String(rel).split("/");
+      const key = parts.length >= 2 ? parts[parts.length - 2] : "미분류";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(f);
+    });
+
+    setBulkUploading(true);
+    setBulkProgress({ done: 0, total: groups.size });
+    let done = 0;
+    let createdCount = 0;
+    for (const [folderName, groupFiles] of Array.from(groups.entries())) {
+      const parsed = parseLocation(folderName);
+      const name = parsed?.place ?? folderName;
+      const address = parsed?.address ?? "";
+      const shoot_date = parsed?.date;
+      try {
+        const res = await adminFetch("/api/admin/locations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folder_id: selectedFolder.id, name, address, shoot_date }),
+        });
+        const locId = res.location?.id;
+        if (locId) {
+          for (const file of groupFiles) {
+            try {
+              const form = new FormData();
+              form.append("file", file);
+              form.append("location_id", locId);
+              await adminFetch("/api/admin/photos", { method: "POST", body: form });
+            } catch {
+              // 개별 사진 실패는 건너뛰고 계속 진행
+            }
+          }
+          createdCount++;
+        }
+      } catch (e: any) {
+        notify(`"${folderName}" 처리 실패: ${e.message ?? ""}`);
+      }
+      done++;
+      setBulkProgress({ done, total: groups.size });
+    }
+    setBulkUploading(false);
+    setBulkProgress(null);
+    await loadLocations(selectedFolder.id);
+    notify(`${createdCount}개 장소를 만들고 사진을 올렸어요`);
+  }
+
+  // ── 사진 업로드/삭제(선택된 장소 기준) ──
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -335,7 +477,7 @@ function AdminContent({ brandId }: { brandId: string }) {
   }
 
   async function uploadFiles(files: FileList | File[]) {
-    if (!locationId) return;
+    if (!selectedLocation) return;
     const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
     if (list.length === 0) return;
     setUploading(true);
@@ -344,7 +486,7 @@ function AdminContent({ brandId }: { brandId: string }) {
       try {
         const form = new FormData();
         form.append("file", list[i]);
-        form.append("location_id", locationId);
+        form.append("location_id", selectedLocation.id);
         await adminFetch("/api/admin/photos", { method: "POST", body: form });
       } catch (e: any) {
         notify(`업로드 실패: ${e.message ?? list[i].name}`);
@@ -353,7 +495,7 @@ function AdminContent({ brandId }: { brandId: string }) {
     }
     setUploading(false);
     setUploadProgress(null);
-    await loadPhotos(locationId);
+    await loadPhotos(selectedLocation.id);
     notify("사진 업로드 완료");
   }
 
@@ -361,7 +503,7 @@ function AdminContent({ brandId }: { brandId: string }) {
     if (!confirm("이 사진을 삭제할까요?")) return;
     try {
       await adminFetch(`/api/admin/photos/${photo.id}`, { method: "DELETE" });
-      if (locationId) await loadPhotos(locationId);
+      if (selectedLocation) await loadPhotos(selectedLocation.id);
       notify("사진을 삭제했어요");
     } catch (e: any) {
       notify(e.message ?? "사진 삭제 실패");
@@ -382,7 +524,7 @@ function AdminContent({ brandId }: { brandId: string }) {
         사진 <span className="text-[#deff9a]">관리자</span>
       </h1>
 
-      {/* 카테고리 탭 — 추가/수정/삭제 가능 */}
+      {/* 카테고리(공간) 탭 — 추가/수정/삭제 가능 */}
       <div className="relative z-10 mb-6 flex flex-wrap items-center gap-2">
         {categoriesLoading ? (
           <LoadingRow />
@@ -468,9 +610,9 @@ function AdminContent({ brandId }: { brandId: string }) {
         )}
       </div>
 
-      <div className="relative z-10 mx-auto grid max-w-5xl grid-cols-1 gap-6 lg:grid-cols-[1fr_1.6fr]">
-        {/* 폴더 */}
-        <Panel title="폴더" disabled={!selectedCategory}>
+      <div className="relative z-10 mx-auto grid max-w-6xl grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* 폴더(회차) */}
+        <Panel title="폴더(회차)" disabled={!selectedCategory}>
           {!selectedCategory ? (
             <EmptyHint text="카테고리를 먼저 만들어보세요" />
           ) : foldersLoading ? (
@@ -501,13 +643,7 @@ function AdminContent({ brandId }: { brandId: string }) {
                   <input
                     value={newLabel}
                     onChange={(e) => setNewLabel(e.target.value)}
-                    placeholder="라벨 (예: 최종제안)"
-                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
-                  />
-                  <input
-                    value={newAddress}
-                    onChange={(e) => setNewAddress(e.target.value)}
-                    placeholder="주소 (지도에 핀 찍을 위치, 선택)"
+                    placeholder="라벨 (예: 1차, 최종제안)"
                     className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
                   />
                   <div className="flex gap-2">
@@ -516,7 +652,7 @@ function AdminContent({ brandId }: { brandId: string }) {
                       disabled={savingFolder}
                       className="flex-1 rounded-lg bg-[#deff9a] py-2 text-xs font-medium text-black disabled:opacity-50"
                     >
-                      {savingFolder ? "저장 중..." : "만들고 바로 업로드"}
+                      {savingFolder ? "저장 중..." : "폴더 만들기"}
                     </button>
                     <button
                       onClick={() => setNewFolderOpen(false)}
@@ -533,10 +669,106 @@ function AdminContent({ brandId }: { brandId: string }) {
           )}
         </Panel>
 
-        {/* 사진 */}
-        <Panel title={selectedFolder ? `사진 — ${selectedFolder.folder_name}` : "사진"} disabled={!selectedFolder}>
+        {/* 장소(로케이션) */}
+        <Panel title={selectedFolder ? `장소 — ${selectedFolder.folder_name}` : "장소"} disabled={!selectedFolder}>
           {!selectedFolder ? (
-            <EmptyHint text="폴더를 클릭하면 바로 사진을 올릴 수 있어요" />
+            <EmptyHint text="폴더를 먼저 선택하세요" />
+          ) : locationsLoading ? (
+            <LoadingRow />
+          ) : (
+            <div className="space-y-2">
+              {locations.map((loc) => (
+                <RowCard
+                  key={loc.id}
+                  active={selectedLocation?.id === loc.id}
+                  onClick={() => openLocation(loc)}
+                  onDelete={() => deleteLocation(loc)}
+                  icon={<MapPin size={16} strokeWidth={1.5} />}
+                  label={loc.name}
+                />
+              ))}
+              {locations.length === 0 && <EmptyHint text="아직 장소가 없어요" />}
+
+              {newLocOpen ? (
+                <div className="space-y-2 rounded-xl border border-[#deff9a]/20 bg-[#deff9a]/[0.04] p-3">
+                  <input
+                    value={newLocRaw}
+                    onChange={(e) => setNewLocRaw(e.target.value)}
+                    onBlur={applyRawParse}
+                    placeholder="폴더명 붙여넣기 (날짜-장소명-주소)"
+                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40 placeholder:text-white/25"
+                  />
+                  <div className="text-center text-[10px] text-white/20">또는 직접 입력</div>
+                  <input
+                    value={newLocName}
+                    onChange={(e) => setNewLocName(e.target.value)}
+                    placeholder="장소명"
+                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
+                  />
+                  <input
+                    value={newLocAddress}
+                    onChange={(e) => setNewLocAddress(e.target.value)}
+                    placeholder="주소 (지도 핀 위치)"
+                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={createLocation}
+                      disabled={savingLoc}
+                      className="flex-1 rounded-lg bg-[#deff9a] py-2 text-xs font-medium text-black disabled:opacity-50"
+                    >
+                      {savingLoc ? "저장 중..." : "장소 추가"}
+                    </button>
+                    <button
+                      onClick={() => setNewLocOpen(false)}
+                      className="rounded-lg border border-white/10 px-3 py-2 text-xs text-white/50 hover:text-white"
+                    >
+                      취소
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <AddButton label="새 장소" onClick={() => setNewLocOpen(true)} />
+              )}
+
+              <button
+                onClick={() => bulkInputRef.current?.click()}
+                disabled={bulkUploading}
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-white/15 py-2.5 text-xs text-white/40 transition-colors hover:border-[#deff9a]/40 hover:text-[#deff9a] disabled:opacity-50"
+              >
+                {bulkUploading ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    {bulkProgress ? `${bulkProgress.done}/${bulkProgress.total} 장소 처리 중...` : "처리 중..."}
+                  </>
+                ) : (
+                  <>
+                    <Folder size={13} /> 장소 폴더들 한번에 올리기
+                  </>
+                )}
+              </button>
+              <p className="text-center text-[10px] leading-relaxed text-white/20">
+                회차 폴더를 통째로 선택하면 하위 폴더(날짜-장소명-주소)를 각각 장소로 자동 생성해요
+              </p>
+              <input
+                ref={bulkInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                {...({ webkitdirectory: "true", directory: "true" } as any)}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) bulkUploadLocations(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+            </div>
+          )}
+        </Panel>
+
+        {/* 사진 */}
+        <Panel title={selectedLocation ? `사진 — ${selectedLocation.name}` : "사진"} disabled={!selectedLocation}>
+          {!selectedLocation ? (
+            <EmptyHint text="장소를 클릭하면 바로 사진을 올릴 수 있어요" />
           ) : (
             <>
               <div className="mb-3 flex items-center gap-1.5 text-[11px] text-white/30">
@@ -560,12 +792,12 @@ function AdminContent({ brandId }: { brandId: string }) {
                   </>
                 ) : (
                   <>
-                    <span className={folderAddress ? "text-white/50" : "text-white/20"}>
-                      {folderAddress || "주소 없음 — 지도에 핀이 표시되지 않아요"}
+                    <span className={selectedLocation.address ? "text-white/50" : "text-white/20"}>
+                      {selectedLocation.address || "주소 없음 — 지도에 핀이 표시되지 않아요"}
                     </span>
                     <button
                       onClick={() => {
-                        setAddressDraft(folderAddress);
+                        setAddressDraft(selectedLocation.address || "");
                         setEditingAddress(true);
                       }}
                       className="text-white/20 hover:text-white"
@@ -576,100 +808,139 @@ function AdminContent({ brandId }: { brandId: string }) {
                 )}
               </div>
               <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDragOver(true);
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={async (e) => {
-                e.preventDefault();
-                setDragOver(false);
-                const files = await filesFromDrop(e.dataTransfer);
-                if (files.length > 0) uploadFiles(files);
-              }}
-              className={`rounded-xl border-2 border-dashed p-2 transition-colors ${
-                dragOver ? "border-[#deff9a]/60 bg-[#deff9a]/[0.04]" : "border-transparent"
-              }`}
-            >
-              {photosLoading ? (
-                <LoadingRow />
-              ) : (
-                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-                  {photos.map((p) => (
-                    <div key={p.id} className="group relative aspect-square overflow-hidden rounded-lg border border-white/10">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={locationPhotoUrl(p.storage_path)} alt="" className="h-full w-full object-cover" />
-                      <button
-                        onClick={() => deletePhoto(p)}
-                        className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500/80"
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                  ))}
-
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
-                    className="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 text-white/40 transition-colors hover:border-[#deff9a]/40 hover:text-[#deff9a] disabled:opacity-50"
-                  >
-                    {uploading ? (
-                      <>
-                        <Loader2 size={18} className="animate-spin" />
-                        <span className="text-[10px]">
-                          {uploadProgress ? `${uploadProgress.done}/${uploadProgress.total}` : "업로드 중"}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <Upload size={18} strokeWidth={1.5} />
-                        <span className="text-[10px] tracking-wide">사진 추가</span>
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    onClick={() => folderInputRef.current?.click()}
-                    disabled={uploading}
-                    className="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 text-white/40 transition-colors hover:border-[#deff9a]/40 hover:text-[#deff9a] disabled:opacity-50"
-                  >
-                    <Folder size={18} strokeWidth={1.5} />
-                    <span className="text-[10px] tracking-wide">폴더째 올리기</span>
-                  </button>
-                </div>
-              )}
-              {photos.length === 0 && !photosLoading && (
-                <p className="mt-2 flex items-center gap-1.5 text-[11px] text-white/25">
-                  <ImageOff size={12} /> 아직 사진이 없어요 — 여기로 드래그하거나 + 를 눌러 올리세요
-                </p>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files) uploadFiles(e.target.files);
-                  e.target.value = "";
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOver(true);
                 }}
-              />
-              <input
-                ref={folderInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                {...({ webkitdirectory: "true", directory: "true" } as any)}
-                onChange={(e) => {
-                  if (e.target.files) uploadFiles(e.target.files);
-                  e.target.value = "";
+                onDragLeave={() => setDragOver(false)}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  const files = await filesFromDrop(e.dataTransfer);
+                  if (files.length > 0) uploadFiles(files);
                 }}
-              />
-            </div>
+                className={`rounded-xl border-2 border-dashed p-2 transition-colors ${
+                  dragOver ? "border-[#deff9a]/60 bg-[#deff9a]/[0.04]" : "border-transparent"
+                }`}
+              >
+                {photosLoading ? (
+                  <LoadingRow />
+                ) : (
+                  <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                    {photos.map((p) => (
+                      <div key={p.id} className="group relative aspect-square overflow-hidden rounded-lg border border-white/10">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={locationPhotoUrl(p.storage_path)} alt="" className="h-full w-full object-cover" />
+                        <button
+                          onClick={() => deletePhoto(p)}
+                          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-500/80"
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))}
+
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading}
+                      className="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 text-white/40 transition-colors hover:border-[#deff9a]/40 hover:text-[#deff9a] disabled:opacity-50"
+                    >
+                      {uploading ? (
+                        <>
+                          <Loader2 size={18} className="animate-spin" />
+                          <span className="text-[10px]">
+                            {uploadProgress ? `${uploadProgress.done}/${uploadProgress.total}` : "업로드 중"}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload size={18} strokeWidth={1.5} />
+                          <span className="text-[10px] tracking-wide">사진 추가</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => folderInputRef.current?.click()}
+                      disabled={uploading}
+                      className="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 text-white/40 transition-colors hover:border-[#deff9a]/40 hover:text-[#deff9a] disabled:opacity-50"
+                    >
+                      <Folder size={18} strokeWidth={1.5} />
+                      <span className="text-[10px] tracking-wide">폴더째 올리기</span>
+                    </button>
+                  </div>
+                )}
+                {photos.length === 0 && !photosLoading && (
+                  <p className="mt-2 flex items-center gap-1.5 text-[11px] text-white/25">
+                    <ImageOff size={12} /> 아직 사진이 없어요 — 여기로 드래그하거나 + 를 눌러 올리세요
+                  </p>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files) uploadFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <input
+                  ref={folderInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  {...({ webkitdirectory: "true", directory: "true" } as any)}
+                  onChange={(e) => {
+                    if (e.target.files) uploadFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+              </div>
             </>
           )}
         </Panel>
       </div>
+
+      {/* 현장 정보(리포트) — 장소를 선택했을 때만 */}
+      {selectedLocation && (
+        <div className="relative z-10 mx-auto mt-6 max-w-6xl">
+          <Panel title={`현장 정보 — ${selectedLocation.name}`}>
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <div className="space-y-2">
+                {REPORT_FIELDS.map((f) => (
+                  <div key={f.key}>
+                    <label className="mb-1 block text-[10px] tracking-widest text-white/30">{f.label}</label>
+                    <input
+                      value={reportDraft[f.key] ?? ""}
+                      onChange={(e) => setReportDraft((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                      placeholder={f.placeholder}
+                      className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-white outline-none focus:border-[#deff9a]/40 placeholder:text-white/15"
+                    />
+                  </div>
+                ))}
+                <button
+                  onClick={saveReport}
+                  disabled={savingReport}
+                  className="mt-2 w-full rounded-lg bg-[#deff9a] py-2 text-xs font-medium text-black disabled:opacity-50"
+                >
+                  {savingReport ? "저장 중..." : "리포트 저장"}
+                </button>
+              </div>
+              <div>
+                <div className="mb-2 text-[10px] tracking-widest text-white/25">미리보기</div>
+                <LocationReportCard
+                  name={selectedLocation.name}
+                  address={selectedLocation.address}
+                  shootDate={selectedLocation.shoot_date}
+                  report={reportDraft}
+                />
+              </div>
+            </div>
+          </Panel>
+        </div>
+      )}
 
       <AnimatePresence>
         {toast && (
