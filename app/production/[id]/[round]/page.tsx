@@ -4,15 +4,13 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Home, Coffee, Trees, Folder, Download, Loader2, Check } from "lucide-react";
-import { supabase, locationPhotoUrl } from "../../../../lib/supabaseClient";
+import { Home, Coffee, Trees, Folder, Download, Loader2 } from "lucide-react";
+import { supabase } from "../../../../lib/supabaseClient";
 import { folderRound } from "../../../../lib/parseFolder";
-import { zipAndDownload } from "../../../../lib/zipDownload";
 
 // 관리자 페이지에서 만든 카테고리는 자유 이름이라, 알려진 slug만 전용 아이콘을 쓰고 나머진 기본 폴더 아이콘
 const ICONS: Record<string, typeof Home> = { home: Home, cafe: Coffee, playground: Trees };
 
-type DownloadState = "idle" | "zipping" | "done" | "error";
 type CategoryRow = { slug: string; name: string; sort_order: number };
 type FolderRow = { id: string; category: string; folder_name: string; mmdd: string; label: string; round: number | null };
 
@@ -24,7 +22,6 @@ export default function RoundPage() {
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [roundFolders, setRoundFolders] = useState<FolderRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [state, setState] = useState<DownloadState>("idle");
 
   useEffect(() => {
     let cancelled = false;
@@ -61,48 +58,6 @@ export default function RoundPage() {
   // 카테고리 테이블에 없는(예전 방식으로 만들어진) slug도 놓치지 않기 위한 보정
   const extraSlugs = Array.from(new Set(roundFolders.map((f) => f.category))).filter((s) => !knownSlugs.has(s));
 
-  async function handleDownloadAll() {
-    if (!supabase || state === "zipping" || roundFolders.length === 0) return;
-    setState("zipping");
-    try {
-      const folderIds = roundFolders.map((f) => f.id);
-      const folderCat = new Map(roundFolders.map((f) => [f.id, f.category]));
-      const catNameOf = (slug: string) => categories.find((c) => c.slug === slug)?.name ?? slug;
-
-      const { data: locs } = await supabase.from("locations").select("id,name,folder_id").in("folder_id", folderIds);
-      const locList = locs ?? [];
-      if (locList.length === 0) throw new Error("사진이 없습니다");
-
-      const { data: photoRows } = await supabase
-        .from("photos")
-        .select("id,storage_path,sort_order,location_id")
-        .in(
-          "location_id",
-          locList.map((l: any) => l.id)
-        )
-        .order("sort_order", { ascending: true });
-
-      const entries: { url: string; name: string }[] = [];
-      locList.forEach((l: any) => {
-        const spaceName = catNameOf(folderCat.get(l.folder_id) ?? "");
-        const photosOfLoc = (photoRows ?? []).filter((p: any) => p.location_id === l.id);
-        photosOfLoc.forEach((p: any, i: number) => {
-          entries.push({
-            url: locationPhotoUrl(p.storage_path),
-            name: `${spaceName}/${l.name}_${String(i + 1).padStart(2, "0")}.jpg`,
-          });
-        });
-      });
-
-      await zipAndDownload(entries, `${round}차_전체`);
-      setState("done");
-      setTimeout(() => setState("idle"), 2000);
-    } catch {
-      setState("error");
-      setTimeout(() => setState("idle"), 2500);
-    }
-  }
-
   return (
     <div className="relative min-h-screen bg-black px-4 py-10 sm:px-8 sm:py-16">
       <div className="pointer-events-none fixed left-1/2 top-0 h-[500px] w-[900px] -translate-x-1/2 rounded-full bg-[#deff9a]/[0.04] blur-[140px]" />
@@ -127,19 +82,15 @@ export default function RoundPage() {
           {Number.isFinite(round) ? round : "?"}
           <span className="text-[#deff9a]">차</span>
         </h1>
-        <button
-          onClick={handleDownloadAll}
-          disabled={state === "zipping" || roundFolders.length === 0}
-          className="flex items-center gap-2 rounded-md bg-[#deff9a] px-4 py-2 text-xs font-medium tracking-widest text-black shadow-lg shadow-black/40 transition-all hover:bg-[#deff9a]/90 disabled:cursor-not-allowed disabled:opacity-70"
+        <a
+          href={`/api/download?id=${id}&round=${round}`}
+          className={`flex items-center gap-2 rounded-md bg-[#deff9a] px-4 py-2 text-xs font-medium tracking-widest text-black shadow-lg shadow-black/40 transition-all hover:bg-[#deff9a]/90 ${
+            roundFolders.length === 0 ? "pointer-events-none opacity-50" : ""
+          }`}
         >
-          {state === "zipping" && <Loader2 size={14} className="animate-spin" />}
-          {state === "done" && <Check size={14} />}
-          {state === "idle" && <Download size={14} />}
-          {state === "zipping" && "압축 중..."}
-          {state === "done" && "다운로드 완료"}
-          {state === "error" && "다시 시도"}
-          {state === "idle" && "회차 전체 다운로드 (ZIP)"}
-        </button>
+          <Download size={14} />
+          회차 전체 다운로드 (ZIP)
+        </a>
       </div>
 
       {loading ? (

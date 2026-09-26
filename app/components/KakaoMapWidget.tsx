@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, X } from "lucide-react";
+import { Maximize2, Route, X } from "lucide-react";
 import { supabase, locationPhotoUrl } from "../../lib/supabaseClient";
 import { parseRound } from "../../lib/parseFolder";
 
@@ -183,6 +183,8 @@ type MarkerEntry = {
   overlay: any;
   category: string;
   map: any;
+  loc: LocationEntry;
+  position: any; // kakao.maps.LatLng — 길찾기 출발/도착 좌표로 재사용
 };
 
 function loadKakaoSdk(): Promise<void> {
@@ -271,7 +273,7 @@ function renderMarkers(
         // 클릭 시 해당 폴더의 사진 미리보기 패널 표시
         if (onSelect) kakao.maps.event.addListener(marker, "click", () => onSelect(loc));
 
-        entries.push({ marker, overlay, category: loc.category, map });
+        entries.push({ marker, overlay, category: loc.category, map, loc, position: coords });
         bounds.extend(coords);
         found += 1;
       }
@@ -366,8 +368,11 @@ function PhotoPreviewPanel({
 export default function KakaoMapWidget({ brandId }: { brandId?: string | number } = {}) {
   const mapRef = useRef<HTMLDivElement>(null);
   const modalMapRef = useRef<HTMLDivElement>(null);
+  const modalMapObjRef = useRef<any>(null);
   const compactEntriesRef = useRef<MarkerEntry[]>([]);
   const modalEntriesRef = useRef<MarkerEntry[]>([]);
+  const routeLineRef = useRef<any>(null);
+  const pickOverlaysRef = useRef<any[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [expanded, setExpanded] = useState(false);
   const [active, setActive] = useState<Set<string>>(new Set(SAMPLE_SPACES.map((s) => s.slug)));
@@ -375,9 +380,124 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
   const [locations, setLocations] = useState<LocationEntry[]>(SAMPLE_LOCATIONS);
   const [spaces, setSpaces] = useState<Space[]>(SAMPLE_SPACES);
 
+  // ── 길찾기(확대 지도 전용) — 핀 두 개를 순서대로 클릭하면 카카오모빌리티로 경로를 그려줌 ──
+  const [directionsMode, setDirectionsMode] = useState(false);
+  const [origin, setOrigin] = useState<{ loc: LocationEntry; lat: number; lng: number } | null>(null);
+  const [destination, setDestination] = useState<{ loc: LocationEntry; lat: number; lng: number } | null>(null);
+  const [routeState, setRouteState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [routeInfo, setRouteInfo] = useState<{ distanceMeters: number; durationSeconds: number } | null>(null);
+
+  function clearRouteLine() {
+    routeLineRef.current?.setMap(null);
+    routeLineRef.current = null;
+  }
+
+  function clearPickOverlays() {
+    pickOverlaysRef.current.forEach((o) => o.setMap(null));
+    pickOverlaysRef.current = [];
+  }
+
+  function resetDirections() {
+    setOrigin(null);
+    setDestination(null);
+    setRouteState("idle");
+    setRouteInfo(null);
+    clearRouteLine();
+    clearPickOverlays();
+  }
+
+  function showPickOverlay(position: any, label: string) {
+    const { kakao } = window;
+    const map = modalMapObjRef.current;
+    if (!map) return;
+    const overlay = new kakao.maps.CustomOverlay({
+      position,
+      content: `<div style="transform:translateY(-34px);padding:2px 7px;border-radius:6px;background:#deff9a;color:#000;font-size:10px;font-weight:700;white-space:nowrap;">${label}</div>`,
+      yAnchor: 1,
+      zIndex: 30,
+    });
+    overlay.setMap(map);
+    pickOverlaysRef.current.push(overlay);
+  }
+
+  function drawRouteLine(path: { lat: number; lng: number }[]) {
+    const { kakao } = window;
+    const map = modalMapObjRef.current;
+    if (!map || path.length === 0) return;
+    clearRouteLine();
+    const linePath = path.map((p) => new kakao.maps.LatLng(p.lat, p.lng));
+    const line = new kakao.maps.Polyline({
+      path: linePath,
+      strokeWeight: 5,
+      strokeColor: "#deff9a",
+      strokeOpacity: 0.9,
+      strokeStyle: "solid",
+    });
+    line.setMap(map);
+    routeLineRef.current = line;
+    const bounds = new kakao.maps.LatLngBounds();
+    linePath.forEach((p) => bounds.extend(p));
+    map.setBounds(bounds);
+  }
+
+  // 확대 지도에서 핀 클릭 — 길찾기 모드면 출발/도착 선택, 아니면 평소처럼 사진 패널
+  function handleModalPin(loc: LocationEntry) {
+    if (!directionsMode) {
+      setSelected(loc);
+      return;
+    }
+    const entry = modalEntriesRef.current.find((e) => e.loc === loc);
+    if (!entry) return;
+    const point = { loc, lat: entry.position.getLat(), lng: entry.position.getLng() };
+
+    if (!origin || destination) {
+      clearPickOverlays();
+      clearRouteLine();
+      setRouteState("idle");
+      setRouteInfo(null);
+      setOrigin(point);
+      setDestination(null);
+      showPickOverlay(entry.position, "출발");
+    } else {
+      if (loc === origin.loc) return;
+      setDestination(point);
+      showPickOverlay(entry.position, "도착");
+    }
+  }
+
+  // 출발/도착이 모두 정해지면 카카오모빌리티 길찾기 API 호출
+  useEffect(() => {
+    if (!origin || !destination) return;
+    let cancelled = false;
+    setRouteState("loading");
+    fetch(`/api/directions?origin=${origin.lng},${origin.lat}&destination=${destination.lng},${destination.lat}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data?.error || !Array.isArray(data?.path) || data.path.length === 0) {
+          setRouteState("error");
+          return;
+        }
+        setRouteInfo({ distanceMeters: data.distanceMeters ?? 0, durationSeconds: data.durationSeconds ?? 0 });
+        drawRouteLine(data.path);
+        setRouteState("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setRouteState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [origin, destination]);
+
   function openExpanded(open: boolean) {
     setSelected(null);
     setExpanded(open);
+    if (!open) {
+      setDirectionsMode(false);
+      resetDirections();
+    }
   }
 
   function toggleCategory(cat: string) {
@@ -443,6 +563,7 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
         center: new kakao.maps.LatLng(37.5665, 126.978),
         level: 8,
       });
+      modalMapObjRef.current = map;
       renderMarkers(
         map,
         locations,
@@ -455,13 +576,14 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
             if (!active.has(entry.category)) entry.marker.setMap(null);
           });
         },
-        (loc) => setSelected(loc)
+        (loc) => handleModalPin(loc)
       );
       setTimeout(() => map.relayout(), 60);
     });
     return () => {
       cancelled = true;
       modalEntriesRef.current = [];
+      modalMapObjRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded]);
@@ -518,16 +640,47 @@ export default function KakaoMapWidget({ brandId }: { brandId?: string | number 
               <CategoryToggleLegend spaces={spaces} active={active} onToggle={toggleCategory} showLabel />
             </div>
             <div className="pointer-events-none absolute bottom-4 left-4 z-20 rounded-md bg-black/70 px-3 py-1.5 text-[9px] tracking-widest text-white/50 backdrop-blur">
-              핀을 클릭하면 사진이 보여요 · 핀 속 숫자 = 회차 · 크고 밝은 핀 = 공간별 가장 최근 회차
+              {!directionsMode &&
+                "핀을 클릭하면 사진이 보여요 · 핀 속 숫자 = 회차 · 크고 밝은 핀 = 공간별 가장 최근 회차"}
+              {directionsMode && !origin && "출발지로 삼을 핀을 클릭하세요"}
+              {directionsMode && origin && !destination && "도착지로 삼을 핀을 클릭하세요"}
+              {directionsMode && origin && destination && routeState === "loading" && "경로 찾는 중..."}
+              {directionsMode && origin && destination && routeState === "error" &&
+                "경로를 찾지 못했어요 — 핀을 다시 클릭해 새로 선택하세요"}
+              {directionsMode && origin && destination && routeState === "ready" && routeInfo && (
+                <span className="text-[#deff9a]">
+                  {(routeInfo.distanceMeters / 1000).toFixed(1)}km · 약 {Math.round(routeInfo.durationSeconds / 60)}분
+                  {" · "}핀을 다시 클릭하면 새로 선택
+                </span>
+              )}
             </div>
-            {selected && <PhotoPreviewPanel loc={selected} onClose={() => setSelected(null)} />}
-            <button
-              onClick={() => openExpanded(false)}
-              className="absolute right-4 top-4 z-20 flex items-center justify-center rounded-md border border-white/20 bg-black/80 p-2 text-white/80 backdrop-blur transition-colors hover:border-[#deff9a]/50 hover:text-[#deff9a]"
-              aria-label="닫기"
-            >
-              <X size={16} />
-            </button>
+            {selected && !directionsMode && <PhotoPreviewPanel loc={selected} onClose={() => setSelected(null)} />}
+            <div className="absolute right-4 top-4 z-20 flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setSelected(null);
+                  setDirectionsMode((v) => {
+                    const next = !v;
+                    if (!next) resetDirections();
+                    return next;
+                  });
+                }}
+                className={`flex items-center gap-1 rounded-md border px-2.5 py-2 text-[10px] font-medium tracking-widest transition-colors ${
+                  directionsMode
+                    ? "border-[#deff9a]/60 bg-[#deff9a] text-black"
+                    : "border-white/20 bg-black/80 text-white/70 hover:border-[#deff9a]/50 hover:text-[#deff9a]"
+                }`}
+              >
+                <Route size={13} /> 길찾기
+              </button>
+              <button
+                onClick={() => openExpanded(false)}
+                className="flex items-center justify-center rounded-md border border-white/20 bg-black/80 p-2 text-white/80 backdrop-blur transition-colors hover:border-[#deff9a]/50 hover:text-[#deff9a]"
+                aria-label="닫기"
+              >
+                <X size={16} />
+              </button>
+            </div>
           </div>
         </div>
       )}
